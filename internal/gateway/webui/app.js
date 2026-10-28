@@ -1,6 +1,7 @@
 /* zcode2api dashboard — shared: token gate, header, fetch, toasts, helpers */
 const LINKS = { github: 'https://github.com/D3-vin/Zcode2Api', telegram: 'https://t.me/D3_vin' };
 var DASH_TOKEN = localStorage.getItem('dash_token') || '';
+var AUTH_MODE = '';   // 'password' | 'local-no-auth' — 由 /api/mode 告知
 var authWaiters = [];
 
 function dashHeaders(extra) {
@@ -76,6 +77,18 @@ function loadVersion() {
     .then(d => { if (!d || !d.version) return; const v = document.getElementById('hdr-version'); if (v) v.textContent = 'v' + d.version; })
     .catch(() => {});
 }
+// esc — HTML-escape anything interpolated into innerHTML.
+// Account labels, plan/entitlement names from the origin billing, proxy names
+// and JWTs are all attacker-influencable (paste a labelled token, or a billing
+// field with markup) and the dashboard renders them with innerHTML. Without
+// this, one crafted label runs script in the operator's session and reads
+// localStorage.dash_token → the whole pool is exported.
+function esc(v) {
+  return String(v == null ? '' : v).replace(/[&<>"'`=]/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;',
+    "'": '&#39;', '`': '&#96;', '=': '&#61;'
+  })[c]);
+}
 function fmtNum(v) {
   const n = Number(v); if (!isFinite(n)) return '—';
   if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(2) + 'B';
@@ -112,9 +125,10 @@ function gate(onAuthed) {
     document.querySelectorAll('[onclick="doLogout()"]').forEach(el => { el.style.display = 'none'; });
   };
   (async () => {
+    AUTH_MODE = await authMode();
     if (DASH_TOKEN && await verifyToken(DASH_TOKEN)) { enter(); return; }
-    // 没有 token：先问 /api/mode，免密模式直接进面板
-    if (!DASH_TOKEN && await authMode() === 'local-no-auth') { hideLogout(); enter(); return; }
+    // 没有 token：免密模式直接进面板
+    if (!DASH_TOKEN && AUTH_MODE === 'local-no-auth') { hideLogout(); enter(); return; }
     DASH_TOKEN = ''; localStorage.removeItem('dash_token'); location.href = '/login.html';
   })();
 }

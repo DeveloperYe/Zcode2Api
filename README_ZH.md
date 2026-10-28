@@ -234,6 +234,15 @@ Model: GLM-5.3
 | `AUTH_LOCK_AFTER` | `20` | 连续失败多少次触发锁定；`0` 关闭 |
 | `AUTH_LOCK_MINUTES` | `15` | 锁定时长（分钟） |
 | `TRUST_PROXY` | _（关）_ | `1` = 从 `X-Forwarded-For` / `X-Real-IP` 取客户端 IP；只在自己可控的反向代理后面开启 |
+### 凭证导出与落盘保护
+
+`data/` 目录按 `0700` 创建，SQLite 文件 `0600`（Windows 上通过 `icacls` 去掉继承 ACL，只留当前用户）。库里有整池 JWT 与 `api.z.ai` 密钥的明文，不能让其它账户读到。
+
+导出只在两道门都过才给：`GET /api/accounts/export?confirm=1` **并且**在 `X-Reauth` 头里重新输入管理口令（本机免密模式没有口令可输，confirm 即为全部条件）。被拒绝与成功的导出都会记日志：`[export] …`。
+
+### 浏览器侧加固
+
+所有响应都带 `Content-Security-Policy`（其中 `connect-src 'self'` —— 就算真被注入脚本也发不出去）、`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`Cache-Control: no-store`。面板里所有插进 HTML 的值（账号名、套餐/额度名、代理名、JWT）都先过 `esc()` 转义再进 `innerHTML`。
 ## 错误处理
 
 | 错误类型 | 处理方式 |

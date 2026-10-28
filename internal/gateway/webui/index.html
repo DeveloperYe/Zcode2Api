@@ -154,7 +154,7 @@ function renderFilters() {
   const cats = ['all', 'active', 'standby', 'cooling', 'exhausted', 'revoked', 'expired', 'disabled'];
   document.getElementById('acct-filters').innerHTML = cats.map(c => {
     const n = c === 'all' ? ACCOUNTS.length : (counts[c] || 0);
-    return `<button class="filter-chip ${curFilter === c ? 'active' : ''}" onclick="setFilter('${c}',this)">${c[0].toUpperCase() + c.slice(1)} <b>${n}</b></button>`;
+    return `<button class="filter-chip ${curFilter === c ? 'active' : ''}" onclick="setFilter('${esc(c)}',this)">${esc(c[0].toUpperCase() + c.slice(1))} <b>${esc(n)}</b></button>`;
   }).join('');
 }
 
@@ -176,14 +176,14 @@ function renderRows() {
       const quota = ent.length ? '<div class="quota-rows">' + ent.map(e => {
         const pct = e.limit ? Math.round((e.remaining || 0) / e.limit * 100) : 0;
         const cls = pct <= 0 ? 'zero' : (pct < 15 ? 'low' : '');
-        return `<div class="quota-row"><div class="quota-row-name">${e.name}</div>
+        return `<div class="quota-row"><div class="quota-row-name">${esc(e.name)}</div>
           <div class="quota-row-track"><div class="quota-row-fill ${cls}" style="width:${pct}%"></div></div>
-          <div class="quota-row-val"><span><b>${fmtNum(e.remaining)}</b> / ${fmtNum(e.limit)}</span>${e.period_end ? '<span class="quota-row-exp">until ' + fmtDateQ(e.period_end) + '</span>' : ''}</div></div>`;
+          <div class="quota-row-val"><span><b>${fmtNum(e.remaining)}</b> / ${fmtNum(e.limit)}</span>${e.period_end ? '<span class="quota-row-exp">until ' + esc(fmtDateQ(e.period_end)) + '</span>' : ''}</div></div>`;
       }).join('') + '</div>' : '<div class="quota-empty">No plan data</div>';
-      return `<div class="acct-row ${a.status ? 'is-disabled' : ''}" data-status="${st}">
+      return `<div class="acct-row ${a.status ? 'is-disabled' : ''}" data-status="${esc(st)}">
         <div class="cell cred">
-          <div style="min-width:0"><div class="acct-name"><span class="nm">${a.label || 'account #' + a.id}</span><span class="tier-b tier-plan">${a.plan || 'no plan'}</span></div>
-          <div class="cred-sub">${a.jwt} · JWT</div></div></div>
+          <div style="min-width:0"><div class="acct-name"><span class="nm">${a.label ? esc(a.label) : 'account #' + esc(a.id)}</span><span class="tier-b tier-plan">${a.plan ? esc(a.plan) : 'no plan'}</span></div>
+          <div class="cred-sub">${esc(a.jwt)} · JWT</div></div></div>
         <div class="cell">${badge(st)}</div>
         <div class="cell"><span class="cell-sub" style="font-family:var(--mono)">${a.risk_strikes || 0} / 3</span></div>
         <div class="cell">${quota}</div>
@@ -197,7 +197,11 @@ function renderRows() {
       </div>`;
     }).join('');
 }
-function badge(s) { const m = { active:'Active', standby:'Standby', exhausted:'Exhausted', cooling:'Cooling', revoked:'Revoked', expired:'Expired', disabled:'Disabled' }; return `<span class="badge badge-${s}">${m[s] || s}</span>`; }
+// 状态字符串来自数据库（可被上游/粘贴内容影响），一律转义
+function badge(s) {
+  const m = { active: 'Active', standby: 'Standby', exhausted: 'Exhausted', cooling: 'Cooling', revoked: 'Revoked', expired: 'Expired', disabled: 'Disabled' };
+  return `<span class="badge badge-${esc(s)}">${esc(m[s] || s)}</span>`;
+}
 
 async function claimAll(btn) { spinBtn(btn); toast('Claiming offered plans…', 'ok'); await post('/api/accounts/claim-all', {}); await refreshAccounts(); toast('Claim finished', 'ok'); }
 async function claimOne(id) { toast('Claiming…', 'ok'); await post('/api/accounts/claim-one', { id }); await refreshAccounts(); toast('Done', 'ok'); }
@@ -213,10 +217,25 @@ async function refreshOne(id) { await post('/api/accounts/refresh', { id }); awa
 async function refreshAll(btn) { if (btn) spinBtn(btn); await post('/api/quota/refresh'); await refreshAccounts(); }
 async function toggleAccount(id, enabled) { await post('/api/accounts/toggle', { id, enabled }); await refreshAccounts(); }
 async function delAccount(id) { if (!confirm('Delete this account?')) return; await post('/api/accounts/remove', { id }); await refreshAccounts(); }
-function doExport() { j('/api/accounts/export').then(d => {
+async function doExport() {
+  // 导出的是整池 JWT + api_key 明文：服务端要求 ?confirm=1，且（有口令时）
+  // 必须重新输入一次管理口令，防呆手 + 防一次误点/一次 XSS 就把池子交出去
+  const headers = {};
+  if (AUTH_MODE !== 'local-no-auth') {
+    const pw = prompt(tr('Exporting every JWT and api_key in cleartext. Re-enter the admin password to confirm:'));
+    if (!pw) return;
+    headers['X-Reauth'] = pw;
+  }
+  const res = await fetch('/api/accounts/export?confirm=1', { headers: dashHeaders(headers) });
+  if (!res.ok) {
+    toast(res.status === 403 ? tr('Export refused: password confirmation failed') : ('Export failed (' + res.status + ')'), 'err');
+    return;
+  }
+  const d = await res.json();
   const blob = new Blob([JSON.stringify(d, null, 2)], { type: 'application/json' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'zcode-accounts.json'; a.click();
-}); }
+  toast(tr('Export saved'), 'ok');
+}
 function doImport() { document.getElementById('import-file').click(); }
 async function onImportFile(input) {
   const f = input.files && input.files[0];
@@ -306,14 +325,14 @@ async function openEdit(id) {
   document.getElementById('edit-token').value = '';
   const sel = document.getElementById('edit-egress');
   sel.innerHTML = '<option value="pool">Pool — random from all lines</option><option value="direct">Direct (no proxy)</option>' +
-    PROFILES.map(p => `<option value="${p.id}">${(p.name || p.url)}</option>`).join('');
+    PROFILES.map(p => `<option value="${esc(p.id)}">${esc(p.name || p.url)}</option>`).join('');
   sel.value = egressOf(a);
   if (!sel.value) sel.value = 'pool';
   const dm = new Set((a.disabled_models || '').split(',').filter(Boolean));
   const models = new Set(['glm-5.3', 'glm-5.3-flash']);
   for (const e of (a.entitlements || [])) if (e.name) models.add(String(e.name).toLowerCase());
   document.getElementById('edit-disabled').innerHTML = [...models].map(m =>
-    `<label><input type="checkbox" value="${m}" ${dm.has(m) ? 'checked' : ''}> ${m}</label>`).join('');
+    `<label><input type="checkbox" value="${esc(m)}" ${dm.has(m) ? 'checked' : ''}> ${esc(m)}</label>`).join('');
   openModal('modal-edit');
 }
 async function saveEdit() {

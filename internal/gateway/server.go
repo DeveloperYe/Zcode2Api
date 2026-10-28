@@ -48,7 +48,34 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/messages", s.withGatewayAuth(s.handleMessages))
 	mux.HandleFunc("/async/v1/messages", s.withGatewayAuth(s.handleAsyncMessages))
 	mux.HandleFunc("/v1/chat/completions", s.withGatewayAuth(s.handleChatCompletions))
-	return s.withCORS(mux)
+	return s.withCORS(s.securityHeaders(mux))
+}
+
+// securityHeaders sets the browser-facing hardening headers.
+//
+// The pages carry inline <script>/<style> and inline onclick handlers, so
+// 'unsafe-inline' has to stay or the UI dies. What CSP still buys us is
+// containment: no external script/style/frame/object, and — the important one
+// — connect-src 'self', so even a hypothetical XSS cannot ship the dashboard
+// token or account data to an outside host.
+func (s *Server) securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy",
+			"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "+
+				"img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; "+
+				"base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+		// the dashboard keeps its token in localStorage and the API carries
+		// credentials — nothing here should ever land in a cache
+		if !strings.HasPrefix(r.URL.Path, "/v1/") && !strings.HasPrefix(r.URL.Path, "/async/") {
+			h.Set("Cache-Control", "no-store")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // apiMode reports the effective authentication policy (no secrets).

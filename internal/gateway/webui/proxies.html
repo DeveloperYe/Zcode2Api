@@ -116,8 +116,8 @@ function renderProxyList() {
   const shown = proxShown();
   el.innerHTML = shown.map(p => `
     <div class="proxy-line ${p.paused ? 'paused' : ''}">
-      <div class="proxy-line-name">${p.name || 'line'}${p.paused ? ' <span class="badge badge-cooling">paused</span>' : ''}${p.bound_to_account ? ' <span class="badge badge-active">#' + p.bound_to_account + '</span>' : ''}</div>
-      <div class="proxy-line-url">${p.url}</div>
+      <div class="proxy-line-name">${p.name ? esc(p.name) : 'line'}${p.paused ? ' <span class="badge badge-cooling">paused</span>' : ''}${p.bound_to_account ? ' <span class="badge badge-active">#' + esc(p.bound_to_account) + '</span>' : ''}</div>
+      <div class="proxy-line-url">${esc(p.url)}</div>
       <div style="display:flex;gap:6px">
         <button class="act-btn icon" title="Probe: public IP + latency" onclick="probeOne(${p.id},this)"><svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></button>
         <button class="act-btn icon danger" title="Delete line" onclick="delProxy(${p.id})"><svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>

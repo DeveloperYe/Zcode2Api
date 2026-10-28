@@ -216,6 +216,15 @@ Every authentication endpoint is rate limited per client IP: rejected credential
 | `AUTH_LOCK_AFTER` | `20` | consecutive failures before a lock; `0` disables |
 | `AUTH_LOCK_MINUTES` | `15` | lock duration in minutes |
 | `TRUST_PROXY` | _(off)_ | `1` = take the client IP from `X-Forwarded-For` / `X-Real-IP`; only enable behind a proxy you control |
+### Credentials at rest & export
+
+`data/` is created `0700` and the SQLite file is `0600` (on Windows the inherited ACL is stripped with `icacls`, leaving only the current user). The database holds every JWT and `api.z.ai` key in cleartext, so it must not be world-readable.
+
+Exporting the pool is a two-step gate: `GET /api/accounts/export?confirm=1` **plus** the admin password re-entered in the `X-Reauth` header (in loopback no-password mode the confirm flag is the whole gate). Refused and successful exports are logged as `[export] …`.
+
+### Browser hardening
+
+Every response carries `Content-Security-Policy` (`connect-src 'self'` — an injected script cannot phone home), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and `Cache-Control: no-store`. All values the dashboard interpolates into HTML (account labels, plan/entitlement names, proxy names, JWTs) are escaped through `esc()` before they reach `innerHTML`.
 ## Error Handling
 
 | Error Type | Behavior |

@@ -1,12 +1,16 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -40,11 +44,15 @@ type Store struct {
 }
 
 func OpenStore(path string) (*Store, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil && filepath.Dir(path) != "." {
-		// ok if dir is .
-	}
-	if dir := filepath.Dir(path); dir != "." && dir != "" {
-		_ = os.MkdirAll(dir, 0o755)
+	// The database holds every account's JWT and api.z.ai key in cleartext, so
+	// the directory and the file are restricted to the current user: 0700/0600
+	// on POSIX, an inheritance-stripped ACL on Windows (see tighten()).
+	dir := filepath.Dir(path)
+	if dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, fmt.Errorf("create data dir %s: %w", dir, err)
+		}
+		tighten(dir, true)
 	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -56,7 +64,39 @@ func OpenStore(path string) (*Store, error) {
 	if err := s.migrate(); err != nil {
 		return nil, err
 	}
+	tighten(path, false)
 	return s, nil
+}
+
+// tighten restricts a credential-bearing path to the current user.
+//
+// POSIX: chmod does the job. Windows: Go's chmod only clears the read-only
+// bit, so the ACL is rewritten instead (icacls, inheritance stripped, current
+// user full control). Both are best-effort: a failure is logged, never fatal —
+// locking the operator out of their own panel over an ACL hiccup would be a
+// worse outcome than the leak it prevents.
+func tighten(path string, isDir bool) {
+	mode := os.FileMode(0o600)
+	if isDir {
+		mode = 0o700
+	}
+	if err := os.Chmod(path, mode); err != nil && !os.IsNotExist(err) {
+		log.Printf("[store] chmod %s: %v", path, err)
+	}
+	if runtime.GOOS != "windows" {
+		return
+	}
+	user := os.Getenv("USERNAME")
+	if user == "" {
+		return
+	}
+	// icacls "<path>" /inheritance:r /grant:r "<user>:F"
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "icacls", path, "/inheritance:r", "/grant:r", user+":F").CombinedOutput()
+	if err != nil {
+		log.Printf("[store] icacls %s failed (credentials stay readable by inherited ACLs): %v %s", path, err, strings.TrimSpace(string(out)))
+	}
 }
 
 func (s *Store) migrate() error {

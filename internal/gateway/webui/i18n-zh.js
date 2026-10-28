@@ -141,6 +141,10 @@
       '，在「账号池 → 编辑 → 出口线路」里按账号选择。连续 2 次探测失败会自动暂停该线路。',
     'Pool (random from all)': '线路池（全随机）',
     'URL': '地址',
+    'Exporting every JWT and api_key in cleartext. Re-enter the admin password to confirm:':
+      '即将导出整池 JWT 与 api_key 明文。请重新输入管理口令确认：',
+    'Export refused: password confirmation failed': '导出被拒绝：口令确认失败',
+    'Export saved': '已导出',
     'Admin Panel': '管理面板',
     'Enter the admin password to continue': '输入管理口令以继续',
     'Invalid password': '口令错误',
@@ -285,6 +289,13 @@
     });
     observer.observe(document.body, { childList: true, subtree: true, characterData: true });
   }
+
+  // 供页面脚本翻译「JS 里生成、不走 DOM」的文案（prompt / 动态 toast 等）
+  window.tr = function (s) {
+    if (!wantZh) return s;
+    var t = lookup(String(s == null ? '' : s));
+    return t === null ? s : t;
+  };
 
   // ── 语言切换浮层 ────────────────────────────────────────────────────────
   function mountToggle() {

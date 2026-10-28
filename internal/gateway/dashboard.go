@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -272,12 +273,40 @@ func (s *Server) apiMonitor(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, monitor())
 }
 
+// apiAccountsExport dumps the pool as JSON, device identities included — i.e.
+// every JWT and api.z.ai key in cleartext. Because one bad click (or one XSS)
+// would hand over the whole pool, it is gated twice: an explicit ?confirm=1
+// AND a re-entered password in X-Reauth (skipped only in loopback no-password
+// mode, where there is no password to re-enter). Exports are logged.
 func (s *Server) apiAccountsExport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	writeJSON(w, map[string]any{"accounts": s.store.ExportAccounts()})
+	if !s.exportConfirmed(r) {
+		log.Printf("[export] refused ip=%s (missing confirm/reauth)", s.clientIP(r))
+		writeJSONError(w, http.StatusForbidden, "export requires ?confirm=1 and a re-entered admin password (X-Reauth header)")
+		return
+	}
+	rows := s.store.ExportAccounts()
+	log.Printf("[export] %d accounts exported to ip=%s", len(rows), s.clientIP(r))
+	writeJSON(w, map[string]any{"accounts": rows})
+}
+
+// exportConfirmed validates the double gate on credential export.
+func (s *Server) exportConfirmed(r *http.Request) bool {
+	if r.URL.Query().Get("confirm") != "1" {
+		return false
+	}
+	if s.noAuth {
+		return true // loopback, no password exists — confirm=1 is the whole gate
+	}
+	want := strings.TrimSpace(s.cfg.AuthToken)
+	if want == "" {
+		return false
+	}
+	got := strings.TrimSpace(r.Header.Get("X-Reauth"))
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
 
 // apiAccountsImportJSON restores a backup (JSON body or multipart file).
