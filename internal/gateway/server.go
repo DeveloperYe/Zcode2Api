@@ -1,8 +1,13 @@
 package gateway
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
+	"net/url"
+	"strings"
+
+	"zcode2api/internal/config"
 )
 
 func (s *Server) Handler() http.Handler {
@@ -11,6 +16,10 @@ func (s *Server) Handler() http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"ok"}`))
 	})
+	// /api/mode is the one unauthenticated JSON endpoint: the dashboard needs
+	// to know whether to ask for a password without first provoking a 401.
+	// It carries no secrets — only which auth policy is in force.
+	mux.HandleFunc("/api/mode", s.apiMode)
 	mux.HandleFunc("/", s.handleDashboard)
 	mux.HandleFunc("/api/status", s.withAuth(s.apiStatus))
 	mux.HandleFunc("/api/accounts", s.withAuth(s.apiAccounts))
@@ -39,12 +48,47 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/messages", s.withGatewayAuth(s.handleMessages))
 	mux.HandleFunc("/async/v1/messages", s.withGatewayAuth(s.handleAsyncMessages))
 	mux.HandleFunc("/v1/chat/completions", s.withGatewayAuth(s.handleChatCompletions))
-	return cors(mux)
+	return s.withCORS(mux)
 }
 
-func cors(next http.Handler) http.Handler {
+// apiMode reports the effective authentication policy (no secrets).
+func (s *Server) apiMode(w http.ResponseWriter, r *http.Request) {
+	mode := config.AuthModePassword
+	if strings.TrimSpace(s.cfg.AuthToken) == "" && s.noAuth {
+		mode = config.AuthModeLocalNoAuth
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	json.NewEncoder(w).Encode(map[string]any{
+		"auth_mode": mode,
+		"version":   config.AppVersion,
+	})
+}
+
+// withCORS replaces the old blanket `Access-Control-Allow-Origin: *`.
+//
+// A wildcard ACAO means any web page the operator happens to visit can read
+// the panel's JSON — including /api/accounts/export, i.e. every JWT. So:
+//   - the wildcard is gone; only local-origin callers get a reflected origin
+//   - in no-password mode a browser request from any other origin (or a
+//     cross-site fetch) is refused outright with 403
+//
+// Non-browser callers (curl, SDKs, IDEs) send no Origin header and are
+// unaffected.
+func (s *Server) withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			if s.originAllowed(origin) {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Add("Vary", "Origin")
+			} else if s.noAuth || r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				w.Write([]byte(`{"error":"cross-origin request refused"}`))
+				return
+			}
+		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, x-api-key, anthropic-version, anthropic-beta")
 		if r.Method == http.MethodOptions {
@@ -53,6 +97,21 @@ func cors(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// originAllowed: loopback origins (the dashboard served from 127.0.0.1 /
+// localhost) plus the configured bind host (panel opened over the LAN while a
+// password is set).
+func (s *Server) originAllowed(origin string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	h := u.Hostname()
+	if config.LoopbackHost(h) {
+		return true
+	}
+	return s.cfg.Host != "" && strings.EqualFold(h, s.cfg.Host)
 }
 
 func (s *Server) ListenAndServe() error {

@@ -47,6 +47,22 @@ func main() {
 	// must go direct with system roots like in production.
 	config.ScrubMitmEnv()
 	cfg := config.LoadConfig()
+	// Refuse to serve an unauthenticated panel on a publicly reachable socket.
+	// Loopback + empty token is allowed (local-only, no auth); anything else
+	// without AUTH_TOKEN is a configuration error, not a warning.
+	if mode := cfg.AuthMode(); mode == config.AuthModeInvalid {
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, "  ✖ 拒绝启动 / refusing to start: HOST is not loopback and AUTH_TOKEN is empty")
+		fmt.Fprintln(os.Stderr, "     HOST="+cfg.Host+" 需要口令，否则任何能访问该端口的人都拿到整个账号池。")
+		fmt.Fprintln(os.Stderr, "     (an unauthenticated panel on a routable socket = anyone can export every JWT)")
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, "  设置一个口令 / set one:")
+		fmt.Fprintln(os.Stderr, "     AUTH_TOKEN=<随机串>            # 写进 .env")
+		fmt.Fprintln(os.Stderr, "     node -e \"console.log(require('crypto').randomBytes(24).toString('base64url'))\"")
+		fmt.Fprintln(os.Stderr, "     或者改回 HOST=127.0.0.1（本机免密模式）")
+		fmt.Fprintln(os.Stderr)
+		os.Exit(1)
+	}
 	s, err := gateway.NewServer(cfg)
 	if err != nil {
 		log.Fatal(err)

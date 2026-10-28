@@ -89,7 +89,7 @@ Dashboard: http://localhost:3101
 **OpenAI format:**
 ```bash
 curl -N http://localhost:3101/v1/chat/completions \
-  -H "Authorization: Bearer d3vin" \
+  -H "Authorization: Bearer <your-token>" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "GLM-5.3",
@@ -101,7 +101,7 @@ curl -N http://localhost:3101/v1/chat/completions \
 **Anthropic format:**
 ```bash
 curl -N http://localhost:3101/v1/messages \
-  -H "x-api-key: d3vin" \
+  -H "x-api-key: <your-token>" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "GLM-5.3",
@@ -120,14 +120,14 @@ curl -N http://localhost:3101/v1/messages \
 **For OpenAI-compatible clients (Cursor, OpenCode, etc.):**
 ```
 Base URL: http://localhost:3101/v1
-API Key: d3vin  # your AUTH_TOKEN
+API Key: <your-token>  # your AUTH_TOKEN
 Model: GLM-5.3
 ```
 
 **For Anthropic-compatible clients (Claude Code):**
 ```
 Base URL: http://localhost:3101
-API Key: d3vin  # your AUTH_TOKEN
+API Key: <your-token>  # your AUTH_TOKEN
 Model: GLM-5.3
 ```
 
@@ -178,7 +178,7 @@ All settings in `.env` (see `.env.example` for full reference):
 |----------|---------|-------------|
 | `HOST` | `127.0.0.1` | Server bind address |
 | `PORT` | `3101` | Server port |
-| `AUTH_TOKEN` | `d3vin` | Dashboard & API authentication token |
+| `AUTH_TOKEN` | _(empty)_ | Dashboard & API authentication token. Empty = password-free, and then the server only starts on a loopback `HOST`; a routable bind without a token refuses to start (see [Access control](#access-control)) |
 | `GATEWAY_KEY` | _(empty)_ | Separate key for `/v1/*` endpoints (defaults to `AUTH_TOKEN`) |
 | `ZCODE_KEYS` | _(empty)_ | JWT file to seed pool at startup (one per line) |
 | `PROXY_FILE` | `proxy.txt` | One-time seed of proxy profiles on empty DB |
@@ -194,6 +194,18 @@ All settings in `.env` (see `.env.example` for full reference):
 
 ---
 
+## Access control
+
+There is **no built-in default password**. What authentication is required follows from the bind address:
+
+| `HOST` | `AUTH_TOKEN` | Behaviour |
+|---|---|---|
+| loopback (`127.0.0.1` / `localhost` / `::1`) | empty | starts **password-free**: panel and `/v1/*` are open to this machine only; browser requests from any other origin get 403 |
+| loopback | set | starts; every `/api/*` and `/v1/*` call must present the token |
+| `0.0.0.0` / LAN IP / empty | empty | **refuses to start** (exit 1) |
+| `0.0.0.0` / LAN IP / empty | set | starts; token required |
+
+> An unauthenticated panel on a routable socket lets anyone export the whole account pool — that is why this is a hard error and not a warning.
 ## Error Handling
 
 | Error Type | Behavior |

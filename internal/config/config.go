@@ -44,7 +44,7 @@ func LoadConfig() Config {
 	c := Config{
 		Host:           env("HOST", "127.0.0.1"),
 		Port:           env("PORT", "3101"),
-		AuthToken:      env("AUTH_TOKEN", "d3vin"),
+		AuthToken:      env("AUTH_TOKEN", ""), // no built-in default: see AuthMode()
 		ProxyFile:      env("PROXY_FILE", "proxy.txt"),
 		LoadSwaps:      4,
 		AccountMaxTry:  8,
@@ -88,6 +88,48 @@ func env(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// ── Bind-address / authentication policy ───────────────────────────────────
+//
+// There is NO built-in default password. What authentication is required
+// follows from where the server is bound:
+//
+//	loopback     + empty AUTH_TOKEN → AuthModeLocalNoAuth (local-only, no auth)
+//	loopback     + AUTH_TOKEN       → AuthModePassword
+//	non-loopback + empty AUTH_TOKEN → AuthModeInvalid      (refuse to start)
+//	non-loopback + AUTH_TOKEN       → AuthModePassword
+//
+// Rationale: an unauthenticated panel is acceptable only while the socket is
+// unreachable from other hosts. The moment it is exposed, a password is
+// mandatory — silently starting an open panel on 0.0.0.0 is how these panels
+// end up handing their whole account pool to strangers.
+const (
+	AuthModePassword    = "password"
+	AuthModeLocalNoAuth = "local-no-auth"
+	AuthModeInvalid     = "invalid"
+)
+
+// LoopbackHost reports whether host binds to this machine only.
+func LoopbackHost(host string) bool {
+	h := strings.TrimSpace(strings.ToLower(host))
+	switch h {
+	case "", "localhost", "::1", "[::1]", "::ffff:127.0.0.1":
+		// "" means ":port" in net.Listen, i.e. ALL interfaces — not loopback.
+		return h != ""
+	}
+	return strings.HasPrefix(h, "127.")
+}
+
+// AuthMode returns the effective authentication policy for this config.
+func (c Config) AuthMode() string {
+	if strings.TrimSpace(c.AuthToken) != "" {
+		return AuthModePassword
+	}
+	if LoopbackHost(c.Host) {
+		return AuthModeLocalNoAuth
+	}
+	return AuthModeInvalid
 }
 
 // LoadDotEnv reads .env into the process env (first writer wins: a real

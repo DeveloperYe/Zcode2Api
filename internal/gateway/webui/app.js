@@ -44,6 +44,15 @@ async function verifyToken(t) {
   const res = await fetch('/api/status', { headers: { 'Authorization': 'Bearer ' + t } });
   return res.status === 200;
 }
+// 问服务端当前是「需要口令」还是「本机免密」，避免裸探 401 刷控制台
+async function authMode() {
+  try {
+    const res = await fetch('/api/mode');
+    if (!res.ok) return '';
+    const d = await res.json();
+    return d.auth_mode || '';
+  } catch (e) { return ''; }
+}
 
 function doLogout() { DASH_TOKEN = ''; localStorage.removeItem('dash_token'); location.href = '/login.html'; }
 function spinBtn(btn) {
@@ -54,12 +63,18 @@ function openModal(id) { document.getElementById(id).classList.add('open'); }
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }
 
 function renderHeader(active) {
-  // header is static HTML now; just mark the active nav link + version
+  // header is static HTML now; just mark the active nav link (the version
+  // badge is filled after auth, see loadVersion — fetching it here would
+  // fire an unauthenticated 401 before login and spam the console)
   document.querySelectorAll('.admin-nav-link').forEach(a => a.classList.remove('active'));
   const map = { accounts: '/', proxies: '/proxies.html', settings: '/settings.html' };
   const link = document.querySelector('.admin-nav-link[href="' + (map[active] || '/') + '"]');
   if (link) link.classList.add('active');
-  j('/api/status').then(s => { const v = document.getElementById('hdr-version'); if (v && s.version) v.textContent = 'v' + s.version; }).catch(() => {});
+}
+function loadVersion() {
+  fetch('/api/mode').then(r => r.ok ? r.json() : null)
+    .then(d => { if (!d || !d.version) return; const v = document.getElementById('hdr-version'); if (v) v.textContent = 'v' + d.version; })
+    .catch(() => {});
 }
 function fmtNum(v) {
   const n = Number(v); if (!isFinite(n)) return '—';
@@ -85,13 +100,21 @@ function tickClock() {
 function gate(onAuthed) {
   console.log('[dash] gate start, page=' + PAGE + ', token=' + (DASH_TOKEN ? 'yes' : 'no'));
   renderHeader(PAGE);
-  (async () => {
-    if (DASH_TOKEN && await verifyToken(DASH_TOKEN)) {
+  const enter = () => {
     const app = document.getElementById('app');
     if (app) app.style.display = '';
+    loadVersion();
     boot(onAuthed);
-    return;
-  }
+  };
+  // 免密模式（HOST=127.0.0.1 且没设 AUTH_TOKEN）下隐藏「退出登录」——
+  // 没有登录态可退
+  const hideLogout = () => {
+    document.querySelectorAll('[onclick="doLogout()"]').forEach(el => { el.style.display = 'none'; });
+  };
+  (async () => {
+    if (DASH_TOKEN && await verifyToken(DASH_TOKEN)) { enter(); return; }
+    // 没有 token：先问 /api/mode，免密模式直接进面板
+    if (!DASH_TOKEN && await authMode() === 'local-no-auth') { hideLogout(); enter(); return; }
     DASH_TOKEN = ''; localStorage.removeItem('dash_token'); location.href = '/login.html';
   })();
 }

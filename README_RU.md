@@ -89,7 +89,7 @@ cp .env.example .env
 **Формат OpenAI:**
 ```bash
 curl -N http://localhost:3101/v1/chat/completions \
-  -H "Authorization: Bearer d3vin" \
+  -H "Authorization: Bearer <your-token>" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "GLM-5.3",
@@ -101,7 +101,7 @@ curl -N http://localhost:3101/v1/chat/completions \
 **Формат Anthropic:**
 ```bash
 curl -N http://localhost:3101/v1/messages \
-  -H "x-api-key: d3vin" \
+  -H "x-api-key: <your-token>" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "GLM-5.3",
@@ -120,14 +120,14 @@ curl -N http://localhost:3101/v1/messages \
 **Для OpenAI-совместимых клиентов (Cursor, OpenCode и др.):**
 ```
 Base URL: http://localhost:3101/v1
-API Key: d3vin  # ваш AUTH_TOKEN
+API Key: <your-token>  # ваш AUTH_TOKEN
 Model: GLM-5.3
 ```
 
 **Для Anthropic-совместимых клиентов (Claude Code):**
 ```
 Base URL: http://localhost:3101
-API Key: d3vin  # ваш AUTH_TOKEN
+API Key: <your-token>  # ваш AUTH_TOKEN
 Model: GLM-5.3
 ```
 
@@ -178,7 +178,7 @@ Model: GLM-5.3
 |------------|--------------|----------|
 | `HOST` | `127.0.0.1` | Адрес привязки сервера |
 | `PORT` | `3101` | Порт сервера |
-| `AUTH_TOKEN` | `d3vin` | Токен авторизации дашборда и API |
+| `AUTH_TOKEN` | _(пусто)_ | Токен авторизации дашборда и API. Пусто = без пароля, но только при `HOST` = loopback; при внешнем bind без токена сервер не запускается |
 | `GATEWAY_KEY` | _(пусто)_ | Отдельный ключ для `/v1/*` эндпоинтов (по умолчанию `AUTH_TOKEN`) |
 | `ZCODE_KEYS` | _(пусто)_ | Файл JWT для заполнения пула при старте (по одному на строку) |
 | `PROXY_FILE` | `proxy.txt` | Одноразовое заполнение профилей прокси в пустой БД |

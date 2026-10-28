@@ -97,7 +97,7 @@ cp .env.example .env
 
 ```bash
 curl -N http://localhost:3101/v1/chat/completions \
-  -H "Authorization: Bearer d3vin" \
+  -H "Authorization: Bearer <你的口令>" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "GLM-5.3",
@@ -110,7 +110,7 @@ curl -N http://localhost:3101/v1/chat/completions \
 
 ```bash
 curl -N http://localhost:3101/v1/messages \
-  -H "x-api-key: d3vin" \
+  -H "x-api-key: <你的口令>" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "GLM-5.3",
@@ -120,7 +120,7 @@ curl -N http://localhost:3101/v1/messages \
   }'
 ```
 
-> ⚠️ 上面的 `d3vin` 是默认口令，**务必改成你自己的**（见[配置](#配置)）。
+> ⚠️ 本项目**没有内置默认口令**：不设 `AUTH_TOKEN` 时只能以本机回环地址启动（免密，仅本机可访问）；一旦绑到 `0.0.0.0` 或局域网 IP 又没设口令，服务会**拒绝启动**。生成口令：`node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))"`（见[访问控制](#访问控制)）。
 
 ---
 
@@ -132,7 +132,7 @@ curl -N http://localhost:3101/v1/messages \
 
 ```
 Base URL: http://localhost:3101/v1
-API Key: d3vin  # 你的 AUTH_TOKEN
+API Key: <你的口令>  # 你的 AUTH_TOKEN
 Model: GLM-5.3
 ```
 
@@ -140,7 +140,7 @@ Model: GLM-5.3
 
 ```
 Base URL: http://localhost:3101
-API Key: d3vin  # 你的 AUTH_TOKEN
+API Key: <你的口令>  # 你的 AUTH_TOKEN
 Model: GLM-5.3
 ```
 
@@ -195,7 +195,7 @@ Model: GLM-5.3
 |------|--------|------|
 | `HOST` | `127.0.0.1` | 监听地址 |
 | `PORT` | `3101` | 监听端口 |
-| `AUTH_TOKEN` | `d3vin` | 面板与 API 的鉴权口令 |
+| `AUTH_TOKEN` | _（空）_ | 面板与 API 的鉴权口令。为空＝免密，但只有在 `HOST` 是回环地址时才允许启动；外部绑定且无口令则拒绝启动（见[访问控制](#访问控制)） |
 | `GATEWAY_KEY` | _（空）_ | `/v1/*` 专用密钥（为空则沿用 `AUTH_TOKEN`） |
 | `ZCODE_KEYS` | _（空）_ | 启动时注入账号池的 JWT 文件（一行一个） |
 | `PROXY_FILE` | `proxy.txt` | 空数据库时一次性导入的代理配置 |
@@ -212,6 +212,18 @@ Model: GLM-5.3
 
 ---
 
+## 访问控制
+
+**没有内置默认口令。** 需要多少认证由监听地址决定：
+
+| `HOST` | `AUTH_TOKEN` | 行为 |
+|---|---|---|
+| 回环（`127.0.0.1` / `localhost` / `::1`） | 空 | 启动，**免密**：面板与 `/v1/*` 只对本机开放，来自其它源的浏览器请求一律返回 403 |
+| 回环 | 已设 | 启动；`/api/*` 与 `/v1/*` 都必须带口令 |
+| `0.0.0.0` / 局域网 IP / 空 | 空 | **拒绝启动（退出码 1）** |
+| `0.0.0.0` / 局域网 IP / 空 | 已设 | 启动；必须带口令 |
+
+> 免密面板一旦挂到可路由的地址，任何人访问一下就能导出整个账号池 —— 所以这里做成硬错误而不是警告。
 ## 错误处理
 
 | 错误类型 | 处理方式 |

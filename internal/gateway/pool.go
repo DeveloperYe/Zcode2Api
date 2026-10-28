@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -30,6 +31,9 @@ type Server struct {
 	loginFlows map[string]*loginFlow
 	warmOnce   sync.Once
 	quotaOnce  sync.Once
+	// noAuth — loopback bind with no AUTH_TOKEN: /api/* and /v1/* are open to
+	// this machine only (cross-site browser access is refused in cors()).
+	noAuth bool
 	// runtime knobs (Settings page): quota monitor interval + captcha pool
 	quotaRefreshMin int
 	poolMin         int
@@ -48,6 +52,12 @@ func NewServer(cfg config.Config) (*Server, error) {
 		// actual models come from the origin billing (ModelReport/refresh);
 		// only the default model bootstraps the list before the first scan
 		catalog: NewCatalog([]string{config.DefaultModelID}),
+		noAuth:  cfg.AuthMode() == config.AuthModeLocalNoAuth,
+	}
+	if s.noAuth {
+		log.Printf("[auth] NO-PASSWORD MODE: bound to %s, AUTH_TOKEN is empty — the panel and /v1/* are open to this machine only (cross-site browser requests are refused). Set AUTH_TOKEN to require a password.", cfg.Host)
+	} else if strings.TrimSpace(cfg.GatewayKey) == "" {
+		log.Printf("[auth] password required; GATEWAY_KEY is empty so /v1/* uses the same token as the dashboard — consider setting a separate GATEWAY_KEY")
 	}
 	// THE proxy source: profiles in the store (the dashboard edits them).
 	// PROXY_FILE only seeds them once on a fresh database; chat and billing
@@ -275,6 +285,34 @@ func maskJWT(j string) string {
 	return j[:6] + "…" + j[len(j)-4:]
 }
 
+// bearerOf pulls the presented credential out of Authorization: Bearer <x>
+// or x-api-key: <x>.
+func bearerOf(r *http.Request) string {
+	got := r.Header.Get("Authorization")
+	const p = "Bearer "
+	if len(got) > len(p) && strings.EqualFold(got[:len(p)], p) {
+		got = got[len(p):]
+	}
+	if got == "" {
+		got = r.Header.Get("x-api-key")
+	}
+	return strings.TrimSpace(got)
+}
+
+// tokenOK is the single authentication decision for both /api/* and /v1/*.
+//
+//   - a configured token must always match (constant-time compare)
+//   - no token at all is accepted ONLY in the loopback no-auth mode; any
+//     other case is deny (fail-closed). main() already refuses to start when
+//     a routable socket has no token, so this is defence in depth.
+func (s *Server) tokenOK(r *http.Request, want string) bool {
+	want = strings.TrimSpace(want)
+	if want == "" {
+		return s.noAuth
+	}
+	return subtle.ConstantTimeCompare([]byte(bearerOf(r)), []byte(want)) == 1
+}
+
 // withGatewayAuth guards /v1/* client endpoints: GATEWAY_KEY when set,
 // otherwise the shared AUTH_TOKEN (gateway-key semantics).
 func (s *Server) withGatewayAuth(next http.HandlerFunc) http.HandlerFunc {
@@ -283,15 +321,7 @@ func (s *Server) withGatewayAuth(next http.HandlerFunc) http.HandlerFunc {
 		if key == "" {
 			key = s.cfg.AuthToken
 		}
-		got := r.Header.Get("Authorization")
-		const p = "Bearer "
-		if len(got) > len(p) && got[:len(p)] == p {
-			got = got[len(p):]
-		}
-		if got == "" {
-			got = r.Header.Get("x-api-key")
-		}
-		if got != key {
+		if !s.tokenOK(r, key) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
 			w.Write([]byte(`{"error":{"message":"invalid gateway key","type":"authentication_error"}}`))
@@ -303,19 +333,7 @@ func (s *Server) withGatewayAuth(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.cfg.AuthToken == "" {
-			next(w, r)
-			return
-		}
-		got := r.Header.Get("Authorization")
-		const p = "Bearer "
-		if len(got) > len(p) && got[:len(p)] == p {
-			got = got[len(p):]
-		}
-		if got == "" {
-			got = r.Header.Get("x-api-key")
-		}
-		if got != s.cfg.AuthToken {
+		if !s.tokenOK(r, s.cfg.AuthToken) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
 			w.Write([]byte(`{"error":{"message":"invalid auth token","type":"authentication_error"}}`))

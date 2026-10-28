@@ -37,8 +37,14 @@ async function doLogin() {
   }
 }
 document.getElementById('pw').addEventListener('keypress', e => { if (e.key === 'Enter') doLogin(); });
-// already logged in → straight in
-(async () => { if (DASH_TOKEN && await verify(DASH_TOKEN)) location.href = '/'; })();
+// already logged in → straight in; 免密模式（本机 + 无 AUTH_TOKEN）也直接进
+(async () => {
+  if (DASH_TOKEN && await verify(DASH_TOKEN)) { location.href = '/'; return; }
+  try {
+    const res = await fetch('/api/mode');
+    if (res.ok && (await res.json()).auth_mode === 'local-no-auth') location.href = '/';
+  } catch (e) { /* 留在登录页 */ }
+})();
 </script>
 <script src="/i18n-zh.js?v=1"></script>
 </body>
