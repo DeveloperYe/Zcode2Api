@@ -227,6 +227,20 @@ Exporting the pool is a two-step gate: `GET /api/accounts/export?confirm=1` **pl
 The solver runs as a Node subprocess, downloads JavaScript from the Aliyun CDN and executes it in a happy-dom VM — and that process has `fs` and `child_process`. TLS verification is therefore **strict by default**: `ZCODE_TLS_VERIFY=0` is the only way to disable it, and it prints a loud warning to stderr. (Upstream hard-coded `rejectUnauthorized: false` in the synchronous CDN fetch, which made every mint MITM-able: a hostile Wi-Fi, a tampered DNS answer or a compromised CDN could have run arbitrary code on the host.)
 
 Cache entries in `~/.zcode-captcha-cdn-cache` are keyed by `sha1(URL)` and stored next to a `.sha256` sidecar of their content. A cache read only counts as a hit when the hash matches; a mismatch is logged as `[cache-CORRUPT]`, deleted and re-fetched, and legacy entries without a sidecar are re-fetched once (`[cache-untagged]`).
+### Dependency hygiene
+
+`go.mod` requires **go 1.26.10** (GOTOOLCHAIN=auto fetches it): against go1.25.1 `govulncheck ./...` reported 35 reachable standard-library issues (net/url, crypto/tls, crypto/x509, …), 29 at go1.25.4, 10 at go1.25.14, and **none** at go1.26.10. Re-check after upgrading:
+
+```bash
+go install golang.org/x/vuln/cmd/govulncheck@latest
+govulncheck ./...
+```
+
+The captcha solver's Node dependencies are pinned to exact versions (`happy-dom 21.0.4`, `undici 8.12.3`) — unpinned ranges pulled happy-dom 20.14.0 (host code execution via an unsanitized import alias) and undici 8.10.2 (eight advisories, including a TLS client-option drop that weakens certificate validation). Both matter here because the solver executes downloaded JS with `fs`/`child_process` access. Audit before bumping:
+
+```bash
+cd internal/captcha/captcha_node && npm audit --package-lock-only --registry=https://registry.npmjs.org
+```
 
 ### Browser hardening
 

@@ -245,6 +245,20 @@ Model: GLM-5.3
 打码器是 Node 子进程：从阿里云 CDN 下载 JS 并在 happy-dom 里执行，而这个进程有 `fs` 与 `child_process`。所以 TLS 校验**默认严格**：只有显式 `ZCODE_TLS_VERIFY=0` 才能关掉，且会在 stderr 打一条醒目警告。（上游在同步抓取里硬编码了 `rejectUnauthorized: false`，等于让每一次打码都可被中间人利用：恶意 Wi-Fi、被投毒的 DNS、被攻陷的 CDN 都能在本机执行任意代码。）
 
 `~/.zcode-captcha-cdn-cache` 下的缓存条目以 `sha1(URL)` 命名，旁边有一个 `.sha256` 内容指纹。只有指纹匹配才算命中；不匹配会打 `[cache-CORRUPT]`、删除并重新抓取；没有指纹的旧条目只重抓一次（`[cache-untagged]`）。
+### 依赖卫生
+
+`go.mod` 要求 **go 1.26.10**（`GOTOOLCHAIN=auto` 会自动拉取）：用 go1.25.1 时 `govulncheck ./...` 报 35 项可达的标准库问题（net/url、crypto/tls、crypto/x509 等），go1.25.4 时 29 项，go1.25.14 时 10 项，**go1.26.10 时为 0**。升级后请复核：
+
+```bash
+go install golang.org/x/vuln/cmd/govulncheck@latest
+govulncheck ./...
+```
+
+打码器的 Node 依赖已钉死到精确版本（`happy-dom 21.0.4`、`undici 8.12.3`）—— 用 `^` 范围时会装到 happy-dom 20.14.0（经未净化的 import alias 导致**宿主代码执行**）和 undici 8.10.2（8 条公告，其中一条会让 TLS 客户端选项被丢弃、从而削弱证书校验）。这两点在这个「执行下载来的 JS 且带 `fs`/`child_process`」的进程里都是实打实的风险。升级前先审计：
+
+```bash
+cd internal/captcha/captcha_node && npm audit --package-lock-only --registry=https://registry.npmjs.org
+```
 
 ### 浏览器侧加固
 

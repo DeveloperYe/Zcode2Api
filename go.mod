@@ -1,6 +1,10 @@
 module zcode2api
 
-go 1.25.0
+// Pinned to a patched standard library: govulncheck flagged 35 reachable
+// stdlib issues (net/url, crypto/tls, crypto/x509, …) against go1.25.1,
+// 29 against go1.25.4 and 10 against go1.25.14.
+// Anyone building this module gets at least this toolchain (GOTOOLCHAIN=auto).
+go 1.26.10
 
 require (
 	github.com/google/uuid v1.6.0

@@ -1,12 +1,16 @@
 {
   "name": "zcode2api-captcha-solver",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "private": true,
   "description": "Browserless Aliyun captcha solver (Node + happy-dom simulated browser environment, aligned with the zapi captcha-happy design)",
   "type": "commonjs",
   "main": "solver.js",
+  "comments": {
+    "pinned": "Exact versions, no ^: an unpinned solver pulled happy-dom 20.14.0 (GHSA-834v-8h66-3h79, unsanitized import alias → host code execution) and undici 8.10.2 (8 advisories incl. TLS option dropping / cert-validation bypass). Both matter here because this process executes the downloaded JS and has fs + child_process. Re-audit before bumping: npm audit --registry=https://registry.npmjs.org",
+    "audit": "0 vulnerabilities at happy-dom 21.0.4 + undici 8.12.3 (verified 2026-10-28); solver still mints VERIFY_PARAM 3/3 with this combination"
+  },
   "dependencies": {
-    "happy-dom": "^20.14.0",
-    "undici": "^8.10.2"
+    "happy-dom": "21.0.4",
+    "undici": "8.12.3"
   }
 }
