@@ -38,6 +38,19 @@ type Config struct {
 	CaptchaOff     bool   // CAPTCHA_MODE=off
 	CaptchaTimeout time.Duration
 	CaptchaRetries int
+	// brute-force guard for the auth endpoints (see internal/gateway/ratelimit.go)
+	AuthRateLimit  int  // AUTH_RATE_LIMIT: failed attempts per minute per IP (0 = off)
+	AuthLockAfter  int  // AUTH_LOCK_AFTER: consecutive failures that trigger a lock (0 = off)
+	AuthLockMin    int  // AUTH_LOCK_MINUTES: lock duration in minutes
+	TrustProxy     bool // TRUST_PROXY=1: take the client IP from X-Forwarded-For / X-Real-IP
+}
+
+// AuthLockFor is the lockout duration as a Duration.
+func (c Config) AuthLockFor() time.Duration {
+	if c.AuthLockMin <= 0 {
+		return 15 * time.Minute
+	}
+	return time.Duration(c.AuthLockMin) * time.Minute
 }
 
 func LoadConfig() Config {
@@ -53,6 +66,10 @@ func LoadConfig() Config {
 		CaptchaOff:     os.Getenv("CAPTCHA_MODE") == "off",
 		CaptchaTimeout: 40 * time.Second,
 		CaptchaRetries: 3,
+		AuthRateLimit:  5,
+		AuthLockAfter:  20,
+		AuthLockMin:    15,
+		TrustProxy:     env("TRUST_PROXY", "") == "1",
 	}
 	if v := os.Getenv("BILLING_WORKERS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -78,6 +95,22 @@ func LoadConfig() Config {
 	if v := os.Getenv("CAPTCHA_RETRIES"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			c.CaptchaRetries = n
+		}
+	}
+	// 0 is legal for both: it disables that particular brake
+	if v := os.Getenv("AUTH_RATE_LIMIT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			c.AuthRateLimit = n
+		}
+	}
+	if v := os.Getenv("AUTH_LOCK_AFTER"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			c.AuthLockAfter = n
+		}
+	}
+	if v := os.Getenv("AUTH_LOCK_MINUTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			c.AuthLockMin = n
 		}
 	}
 	return c

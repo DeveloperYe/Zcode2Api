@@ -206,6 +206,16 @@ There is **no built-in default password**. What authentication is required follo
 | `0.0.0.0` / LAN IP / empty | set | starts; token required |
 
 > An unauthenticated panel on a routable socket lets anyone export the whole account pool — that is why this is a hard error and not a warning.
+### Brute-force guard
+
+Every authentication endpoint is rate limited per client IP: rejected credentials cost budget (`AUTH_RATE_LIMIT`, default 5/min), and `AUTH_LOCK_AFTER` consecutive failures (default 20) lock the IP for `AUTH_LOCK_MINUTES` (default 15). A locked IP is refused even with the correct password until the lock expires; a successful login clears the counters. Only rejected attempts consume the budget, so legitimate traffic is never throttled. Denials, throttles and locks are logged as `[auth] denied|throttled|LOCKED ip=… ua=…`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AUTH_RATE_LIMIT` | `5` | failed attempts per minute per IP; `0` disables |
+| `AUTH_LOCK_AFTER` | `20` | consecutive failures before a lock; `0` disables |
+| `AUTH_LOCK_MINUTES` | `15` | lock duration in minutes |
+| `TRUST_PROXY` | _(off)_ | `1` = take the client IP from `X-Forwarded-For` / `X-Real-IP`; only enable behind a proxy you control |
 ## Error Handling
 
 | Error Type | Behavior |

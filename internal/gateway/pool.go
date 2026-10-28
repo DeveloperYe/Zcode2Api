@@ -34,6 +34,8 @@ type Server struct {
 	// noAuth — loopback bind with no AUTH_TOKEN: /api/* and /v1/* are open to
 	// this machine only (cross-site browser access is refused in cors()).
 	noAuth bool
+	// guard — per-IP brute-force brake on the auth endpoints (ratelimit.go)
+	guard *attemptGuard
 	// runtime knobs (Settings page): quota monitor interval + captcha pool
 	quotaRefreshMin int
 	poolMin         int
@@ -52,12 +54,7 @@ func NewServer(cfg config.Config) (*Server, error) {
 		// actual models come from the origin billing (ModelReport/refresh);
 		// only the default model bootstraps the list before the first scan
 		catalog: NewCatalog([]string{config.DefaultModelID}),
-		noAuth:  cfg.AuthMode() == config.AuthModeLocalNoAuth,
-	}
-	if s.noAuth {
-		log.Printf("[auth] NO-PASSWORD MODE: bound to %s, AUTH_TOKEN is empty — the panel and /v1/* are open to this machine only (cross-site browser requests are refused). Set AUTH_TOKEN to require a password.", cfg.Host)
-	} else if strings.TrimSpace(cfg.GatewayKey) == "" {
-		log.Printf("[auth] password required; GATEWAY_KEY is empty so /v1/* uses the same token as the dashboard — consider setting a separate GATEWAY_KEY")
+		guard:   newAttemptGuard(cfg.AuthRateLimit, cfg.AuthLockAfter, cfg.AuthLockFor()),
 	}
 	// THE proxy source: profiles in the store (the dashboard edits them).
 	// PROXY_FILE only seeds them once on a fresh database; chat and billing
@@ -86,6 +83,18 @@ func NewServer(cfg config.Config) (*Server, error) {
 	}
 	if v := s.store.Setting("gateway_key", ""); v != "" {
 		s.cfg.GatewayKey = v
+	}
+	// decide the auth mode only after the stored settings had their say, then
+	// say out loud which mode is in force
+	s.noAuth = s.cfg.AuthMode() == config.AuthModeLocalNoAuth
+	if s.noAuth {
+		log.Printf("[auth] NO-PASSWORD MODE: bound to %s, AUTH_TOKEN is empty — the panel and /v1/* are open to this machine only (cross-site browser requests are refused). Set AUTH_TOKEN to require a password.", s.cfg.Host)
+	} else if strings.TrimSpace(s.cfg.GatewayKey) == "" {
+		log.Printf("[auth] password required; GATEWAY_KEY is empty so /v1/* uses the same token as the dashboard — consider setting a separate GATEWAY_KEY")
+	}
+	if s.cfg.AuthRateLimit > 0 || s.cfg.AuthLockAfter > 0 {
+		log.Printf("[auth] brute-force guard: %d failed attempts/min per IP, %d consecutive failures → %s lock (TRUST_PROXY=%v)",
+			s.cfg.AuthRateLimit, s.cfg.AuthLockAfter, s.cfg.AuthLockFor(), s.cfg.TrustProxy)
 	}
 	// runtime knobs from stored settings (Settings page overrides live)
 	s.quotaRefreshMin = atoiSetting(s.store, "quota_refresh_min", 0)
@@ -321,10 +330,7 @@ func (s *Server) withGatewayAuth(next http.HandlerFunc) http.HandlerFunc {
 		if key == "" {
 			key = s.cfg.AuthToken
 		}
-		if !s.tokenOK(r, key) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(`{"error":{"message":"invalid gateway key","type":"authentication_error"}}`))
+		if !s.enforceAuth(w, r, key, "gateway key") {
 			return
 		}
 		next(w, r)
@@ -333,10 +339,7 @@ func (s *Server) withGatewayAuth(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.tokenOK(r, s.cfg.AuthToken) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(`{"error":{"message":"invalid auth token","type":"authentication_error"}}`))
+		if !s.enforceAuth(w, r, s.cfg.AuthToken, "auth token") {
 			return
 		}
 		next(w, r)

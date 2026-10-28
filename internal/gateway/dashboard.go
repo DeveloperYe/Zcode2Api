@@ -20,6 +20,10 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) apiStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
 	active := s.activeAccount()
 	jwt := ""
 	if active != nil {
@@ -249,6 +253,12 @@ func (s *Server) apiAccountsClaimOne(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) apiQuotaRefresh(w http.ResponseWriter, r *http.Request) {
+	// POST only: a GET here would let a stray <img>/prefetch trigger a full
+	// pool-wide billing scan against the origin
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
 	checked, dropped := s.refreshAllBilling()
 	writeJSON(w, map[string]any{"ok": true, "checked": checked, "dropped": dropped, "accounts": s.accountsJSON()})
 }
@@ -384,6 +394,10 @@ func (s *Server) apiAccountsToggle(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) apiSettings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
 	if r.Method == http.MethodGet {
 		writeJSON(w, map[string]any{
 			"quota_refresh_min": s.store.Setting("quota_refresh_min", "0"),

@@ -53,6 +53,10 @@ func (s *Server) Handler() http.Handler {
 
 // apiMode reports the effective authentication policy (no secrets).
 func (s *Server) apiMode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
 	mode := config.AuthModePassword
 	if strings.TrimSpace(s.cfg.AuthToken) == "" && s.noAuth {
 		mode = config.AuthModeLocalNoAuth
