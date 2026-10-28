@@ -182,7 +182,20 @@
     'paused': '已暂停',
     'Show first ': '只显示前 ',
     'Show all ': '显示全部 ',
-    ' lines': ' 条线路'
+    ' lines': ' 条线路',
+    // 改凭证需旧口令
+    'Current password': '当前口令',
+    'required when changing a credential': '修改任一口令 / 密钥时必填',
+    'current password': '当前口令',
+    'no password set yet': '尚未设置口令',
+    'Old password is required to change credentials': '修改凭证需要先输入当前口令',
+    'old password is required to change credentials': '修改凭证需要先输入当前口令',
+    'Changing the password or the gateway key requires the current password (a stolen session must not be able to rotate the lock).':
+      '修改管理口令或网关密钥时必须输入当前口令（防止会话被盗后静默换锁）。',
+    'Used to log in to this admin panel. Applied immediately; stored as a PBKDF2 verifier, never in cleartext.':
+      '用于登录本管理面板，保存后立即生效；以 PBKDF2 校验值入库，不保存明文。',
+    'set': '已设置',
+    'not set': '未设置'
   };
 
   // ── 动态文本规则：[正则, 替换] ─────────────────────────────────────────

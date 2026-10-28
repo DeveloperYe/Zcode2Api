@@ -43,6 +43,12 @@ type Config struct {
 	AuthLockAfter  int  // AUTH_LOCK_AFTER: consecutive failures that trigger a lock (0 = off)
 	AuthLockMin    int  // AUTH_LOCK_MINUTES: lock duration in minutes
 	TrustProxy     bool // TRUST_PROXY=1: take the client IP from X-Forwarded-For / X-Real-IP
+	// request-size and concurrency limits for the chat endpoints
+	MaxBodyMB     int  // MAX_BODY_MB: largest accepted request body (default 8)
+	MaxConcurrent int  // MAX_CONCURRENT: in-flight chat requests (0 = unlimited)
+	// escape hatches that must be asked for explicitly
+	AllowSolverOverride bool // ZCODE_ALLOW_SOLVER_OVERRIDE=1: honour ZCODE_NODE_SOLVER_CMD
+	ProbeAllowPrivate   bool // PROXY_PROBE_ALLOW_PRIVATE=1: let proxy probes hit private addresses
 }
 
 // AuthLockFor is the lockout duration as a Duration.
@@ -70,6 +76,21 @@ func LoadConfig() Config {
 		AuthLockAfter:  20,
 		AuthLockMin:    15,
 		TrustProxy:     env("TRUST_PROXY", "") == "1",
+		MaxBodyMB:      8,
+		MaxConcurrent:  32,
+		AllowSolverOverride: env("ZCODE_ALLOW_SOLVER_OVERRIDE", "") == "1",
+		ProbeAllowPrivate:   env("PROXY_PROBE_ALLOW_PRIVATE", "") == "1",
+	}
+	if v := os.Getenv("MAX_BODY_MB"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			c.MaxBodyMB = n
+		}
+	}
+	// 0 disables the concurrency cap (do not do that on a small box)
+	if v := os.Getenv("MAX_CONCURRENT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			c.MaxConcurrent = n
+		}
 	}
 	if v := os.Getenv("BILLING_WORKERS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {

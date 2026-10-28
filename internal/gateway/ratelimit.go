@@ -221,7 +221,7 @@ func throttleAuth(w http.ResponseWriter, wait time.Duration) {
 // enforceAuth is the single gate for both /api/* and /v1/*: it applies the
 // brute-force guard, then the credential check, and writes the rejection
 // itself. Returns true when the request may proceed.
-func (s *Server) enforceAuth(w http.ResponseWriter, r *http.Request, want, kind string) bool {
+func (s *Server) enforceAuth(w http.ResponseWriter, r *http.Request, check func(string) bool, kind string) bool {
 	ip := s.clientIP(r)
 
 	if limited, wait := s.guard.blocked(ip); limited {
@@ -230,7 +230,7 @@ func (s *Server) enforceAuth(w http.ResponseWriter, r *http.Request, want, kind 
 		return false
 	}
 
-	if s.tokenOK(r, want) {
+	if check(bearerOf(r)) {
 		s.guard.success(ip)
 		return true
 	}

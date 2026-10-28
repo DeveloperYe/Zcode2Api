@@ -11,8 +11,9 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -28,9 +29,14 @@ func (s *Server) handleAsyncMessages(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 50<<20))
+	body, err := s.readBody(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		if errors.Is(err, errBodyTooLarge) {
+			http.Error(w, `{"error":"request body too large"}`, http.StatusRequestEntityTooLarge)
+			return
+		}
+		log.Printf("[error] read body: %v", err)
+		http.Error(w, `{"error":"could not read request body"}`, http.StatusBadRequest)
 		return
 	}
 	fl, ok := w.(http.Flusher)
@@ -48,10 +54,8 @@ func (s *Server) handleAsyncMessages(w http.ResponseWriter, r *http.Request) {
 	ticket := util.GenerateUUID()
 	writeSSE(w, fl, "ticket", map[string]any{"id": ticket, "status": "pending"})
 
-	// the upstream work aborts when the client goes away
-	go func() {
-		<-ctx.Done()
-	}()
+	// (the upstream work already aborts on ctx cancel via PostMessages; the
+	// no-op goroutine that used to sit here did nothing)
 	writeSSE(w, fl, "ready", map[string]any{"status": "processing"})
 
 	outcome := s.runAsync(ctx, w, fl, body, ticket)

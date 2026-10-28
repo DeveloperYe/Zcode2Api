@@ -2,9 +2,9 @@ package gateway
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -127,7 +127,8 @@ func (s *Server) apiAccountsAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	a, err := s.store.Add(body.JWT, body.Label)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		log.Printf("[store] %s: %v", r.URL.Path, err)
+		writeJSONError(w, http.StatusBadRequest, "request rejected")
 		return
 	}
 	if q, err := s.up.Billing(a.JWT, a.DeviceMid); err == nil {
@@ -153,7 +154,8 @@ func (s *Server) apiAccountsRemove(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	if err := s.store.Remove(body.ID); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		log.Printf("[store] %s: %v", r.URL.Path, err)
+		writeJSONError(w, http.StatusBadRequest, "request rejected")
 		return
 	}
 	writeJSON(w, map[string]any{"ok": true})
@@ -169,7 +171,8 @@ func (s *Server) apiAccountsSelect(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	if err := s.store.Select(body.ID); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		log.Printf("[store] %s: %v", r.URL.Path, err)
+		writeJSONError(w, http.StatusBadRequest, "request rejected")
 		return
 	}
 	writeJSON(w, map[string]any{"ok": true})
@@ -183,8 +186,8 @@ func (s *Server) apiAccountsImport(w http.ResponseWriter, r *http.Request) {
 	path, cleanup, err := importFile(r)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+		log.Printf("[import] %s: %v", r.URL.Path, err)
+		writeJSONError(w, http.StatusBadRequest, "import failed (not a usable manager database)")
 		return
 	}
 	if cleanup != "" {
@@ -193,8 +196,8 @@ func (s *Server) apiAccountsImport(w http.ResponseWriter, r *http.Request) {
 	res, err := s.ImportManagerDB(path)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+		log.Printf("[import] %s: %v", r.URL.Path, err)
+		writeJSONError(w, http.StatusBadRequest, "import failed (not a usable manager database)")
 		return
 	}
 	writeJSON(w, map[string]any{"ok": true, "import": res, "accounts": s.accountsJSON()})
@@ -209,7 +212,8 @@ func (s *Server) apiAccountsClaimAll(w http.ResponseWriter, r *http.Request) {
 	}
 	accs, err := s.store.Accounts()
 	if err != nil {
-		writeJSON(w, map[string]any{"error": err.Error()})
+		log.Printf("[claim] %s: %v", r.URL.Path, err)
+		writeJSONError(w, http.StatusBadGateway, "claim request failed")
 		return
 	}
 	for _, a := range accs {
@@ -298,15 +302,14 @@ func (s *Server) exportConfirmed(r *http.Request) bool {
 	if r.URL.Query().Get("confirm") != "1" {
 		return false
 	}
-	if s.noAuth {
+	if s.passwordless() {
 		return true // loopback, no password exists — confirm=1 is the whole gate
 	}
-	want := strings.TrimSpace(s.cfg.AuthToken)
-	if want == "" {
+	got := strings.TrimSpace(r.Header.Get("X-Reauth"))
+	if got == "" {
 		return false
 	}
-	got := strings.TrimSpace(r.Header.Get("X-Reauth"))
-	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+	return s.checkAdmin(got)
 }
 
 // apiAccountsImportJSON restores a backup (JSON body or multipart file).
@@ -389,7 +392,8 @@ func (s *Server) apiAccountsRefreshOne(w http.ResponseWriter, r *http.Request) {
 		}
 		q, err := s.up.Billing(a.JWT, a.DeviceMid)
 		if err != nil {
-			writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
+			log.Printf("[billing] %s: %v", r.URL.Path, err)
+			writeJSONError(w, http.StatusBadGateway, "quota refresh failed")
 			return
 		}
 		_ = s.store.UpdateQuota(a.ID, q)
@@ -433,11 +437,13 @@ func (s *Server) apiSettings(w http.ResponseWriter, r *http.Request) {
 			"captcha_pool_min":  s.store.Setting("captcha_pool_min", "3"),
 			"captcha_pool_max":  s.store.Setting("captcha_pool_max", "10"),
 			"captcha_pool_ttl":  s.store.Setting("captcha_pool_ttl", "95s"),
-			"gateway_key_set":   s.cfg.GatewayKey != "",
+			"gateway_key_set":   s.envGateKey != "" || s.gwKeyHash != "",
+			"password_set":      s.hasPassword(),
 		})
 		return
 	}
 	var body struct {
+		OldPassword     string `json:"old_password"`
 		AdminPassword   string `json:"admin_password"`
 		GatewayKey      string `json:"gateway_key"`
 		QuotaRefreshMin int    `json:"quota_refresh_min"`
@@ -445,14 +451,34 @@ func (s *Server) apiSettings(w http.ResponseWriter, r *http.Request) {
 		CaptchaPoolMax  int    `json:"captcha_pool_max"`
 		CaptchaPoolTTL  string `json:"captcha_pool_ttl"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	// Changing a credential requires re-proving the current one: a stolen
+	// session (or an XSS) must not be able to silently rotate the lock.
+	if body.AdminPassword != "" || body.GatewayKey != "" {
+		if s.hasPassword() && !s.checkAdmin(strings.TrimSpace(body.OldPassword)) {
+			log.Printf("[auth] credential change refused (old password wrong) ip=%s", s.clientIP(r))
+			writeJSONError(w, http.StatusForbidden, "old password is required to change credentials")
+			return
+		}
+	}
 	if body.AdminPassword != "" {
-		s.cfg.AuthToken = body.AdminPassword // user setting: persisted, wins over env
-		s.store.SetSetting("admin_password", body.AdminPassword)
+		if err := s.setAdminPassword(body.AdminPassword); err != nil {
+			log.Printf("[auth] set admin password: %v", err)
+			writeJSONError(w, http.StatusInternalServerError, "could not store the password")
+			return
+		}
+		log.Printf("[auth] admin password changed ip=%s (stored as PBKDF2 verifier)", s.clientIP(r))
 	}
 	if body.GatewayKey != "" {
-		s.cfg.GatewayKey = body.GatewayKey // user setting: persisted, wins over env
-		s.store.SetSetting("gateway_key", body.GatewayKey)
+		if err := s.setGatewayKey(body.GatewayKey); err != nil {
+			log.Printf("[auth] set gateway key: %v", err)
+			writeJSONError(w, http.StatusInternalServerError, "could not store the gateway key")
+			return
+		}
+		log.Printf("[auth] gateway key changed ip=%s (stored as PBKDF2 verifier)", s.clientIP(r))
 	}
 	if body.QuotaRefreshMin >= 0 {
 		s.quotaRefreshMin = body.QuotaRefreshMin

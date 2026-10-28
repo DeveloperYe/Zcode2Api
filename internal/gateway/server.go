@@ -45,9 +45,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/accounts/restore", s.withAuth(s.apiAccountsImportJSON))
 	mux.HandleFunc("/v1/models", s.withGatewayAuth(s.handleModels))
 	mux.HandleFunc("/v1/usage", s.withGatewayAuth(s.handleUsage))
-	mux.HandleFunc("/v1/messages", s.withGatewayAuth(s.handleMessages))
-	mux.HandleFunc("/async/v1/messages", s.withGatewayAuth(s.handleAsyncMessages))
-	mux.HandleFunc("/v1/chat/completions", s.withGatewayAuth(s.handleChatCompletions))
+	mux.HandleFunc("/v1/messages", s.withGatewayAuth(s.withChatSlot(s.handleMessages)))
+	mux.HandleFunc("/async/v1/messages", s.withGatewayAuth(s.withChatSlot(s.handleAsyncMessages)))
+	mux.HandleFunc("/v1/chat/completions", s.withGatewayAuth(s.withChatSlot(s.handleChatCompletions)))
 	return s.withCORS(s.securityHeaders(mux))
 }
 
@@ -85,7 +85,7 @@ func (s *Server) apiMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mode := config.AuthModePassword
-	if strings.TrimSpace(s.cfg.AuthToken) == "" && s.noAuth {
+	if s.passwordless() {
 		mode = config.AuthModeLocalNoAuth
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -113,7 +113,7 @@ func (s *Server) withCORS(next http.Handler) http.Handler {
 			if s.originAllowed(origin) {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Add("Vary", "Origin")
-			} else if s.noAuth || r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+			} else if s.passwordless() || r.Header.Get("Sec-Fetch-Site") == "cross-site" {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
 				w.Write([]byte(`{"error":"cross-origin request refused"}`))

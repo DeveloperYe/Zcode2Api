@@ -33,9 +33,12 @@
   <div class="settings-stack">
     <div class="settings-card">
       <div class="settings-title">Authentication</div>
+      <div class="settings-row"><label>Current password</label>
+        <input class="input" type="password" id="set-old" placeholder="required when changing a credential">
+        <div class="hint">Changing the password or the gateway key requires the current password (a stolen session must not be able to rotate the lock).</div></div>
       <div class="settings-row"><label>Admin password</label>
         <input class="input" type="password" id="set-password" placeholder="leave empty to keep unchanged">
-        <div class="hint">Used to log in to this admin panel. Applied immediately.</div></div>
+        <div class="hint">Used to log in to this admin panel. Applied immediately; stored as a PBKDF2 verifier, never in cleartext.</div></div>
       <div class="settings-row"><label>Gateway API key (optional)</label>
         <input class="input" type="password" id="set-gateway" placeholder="leave empty to use the admin password">
         <div class="hint">When set, calls to /v1/messages must carry Authorization: Bearer &lt;key&gt; or x-api-key. Currently: <span id="gw-state">—</span></div></div>
@@ -78,8 +81,12 @@
 <script src="/i18n-zh.js?v=1"></script>
 <script>
 const PAGE = 'settings';
+var PW_SET = false;   // 是否已设置过口令（决定改凭证时要不要旧口令）
 function boot() {
   j('/api/settings').then(d => {
+    PW_SET = !!d.password_set;
+    document.getElementById('gw-state').textContent = tr(d.gateway_key_set ? 'set' : 'not set');
+    document.getElementById('set-old').placeholder = tr(PW_SET ? 'current password' : 'no password set yet');
     document.getElementById('set-quota').value = d.quota_refresh_min || 0;
     document.getElementById('set-pmin').value = d.captcha_pool_min || 3;
     document.getElementById('set-pmax').value = d.captcha_pool_max || 10;
@@ -96,15 +103,20 @@ function boot() {
   document.getElementById('ep3').textContent = location.origin + '/async/v1/messages';
 }
 function saveAuth() {
+  const o = document.getElementById('set-old').value.trim();
   const p = document.getElementById('set-password').value.trim();
   const g = document.getElementById('set-gateway').value.trim();
   if (!p && !g) { toast('Enter something to save', 'err'); return; }
+  if (PW_SET && !o) { toast('Old password is required to change credentials', 'err'); return; }
   const body = {};
+  if (o) body.old_password = o;
   if (p) body.admin_password = p;
   if (g) body.gateway_key = g;
-  post('/api/settings', body).then(() => {
-    if (p) { DASH_TOKEN = p; localStorage.setItem('dash_token', p); document.getElementById('set-password').value = ''; }
+  post('/api/settings', body).then(d => {
+    if (d && d.error) { toast(tr(d.error), 'err'); return; }
+    if (p) { DASH_TOKEN = p; localStorage.setItem('dash_token', p); document.getElementById('set-password').value = ''; PW_SET = true; }
     if (g) document.getElementById('set-gateway').value = '';
+    document.getElementById('set-old').value = '';
     toast('Authentication saved', 'ok'); boot();
   }).catch(e => toast('Save failed: ' + (e && e.message ? e.message : e), 'err'));
 }

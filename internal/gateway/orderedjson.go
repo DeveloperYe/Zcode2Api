@@ -26,12 +26,24 @@ func newOrderedDoc() *orderedDoc {
 	return &orderedDoc{vals: map[string]any{}}
 }
 
+// decode limits: the decoder recurses per nesting level, so a pathological
+// body (deeply nested arrays) would otherwise burn stack and CPU. 200 levels
+// is far beyond any real chat request; 200k tokens is far beyond any real
+// prompt body we accept at 8 MB.
+const (
+	maxJSONDepth = 200
+	maxJSONNodes = 200_000
+)
+
+type decodeState struct{ nodes int }
+
 // parseOrdered decodes JSON preserving object key order at every nesting
 // level (numbers as json.Number to keep the client's literal spelling).
 func parseOrdered(body []byte) (*orderedDoc, error) {
 	dec := json.NewDecoder(strings.NewReader(string(body)))
 	dec.UseNumber()
-	v, err := decodeValue(dec)
+	st := &decodeState{}
+	v, err := st.decodeValue(dec, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -42,15 +54,22 @@ func parseOrdered(body []byte) (*orderedDoc, error) {
 	return doc, nil
 }
 
-func decodeValue(dec *json.Decoder) (any, error) {
+func (st *decodeState) decodeValue(dec *json.Decoder, depth int) (any, error) {
+	if depth > maxJSONDepth {
+		return nil, fmt.Errorf("json nested deeper than %d levels", maxJSONDepth)
+	}
+	st.nodes++
+	if st.nodes > maxJSONNodes {
+		return nil, fmt.Errorf("json has more than %d nodes", maxJSONNodes)
+	}
 	tok, err := dec.Token()
 	if err != nil {
 		return nil, err
 	}
-	return decodeFromToken(dec, tok)
+	return st.decodeFromToken(dec, tok, depth)
 }
 
-func decodeFromToken(dec *json.Decoder, tok json.Token) (any, error) {
+func (st *decodeState) decodeFromToken(dec *json.Decoder, tok json.Token, depth int) (any, error) {
 	switch t := tok.(type) {
 	case json.Delim:
 		switch t {
@@ -65,7 +84,7 @@ func decodeFromToken(dec *json.Decoder, tok json.Token) (any, error) {
 				if !ok {
 					return nil, fmt.Errorf("bad object key")
 				}
-				v, err := decodeValue(dec)
+				v, err := st.decodeValue(dec, depth+1)
 				if err != nil {
 					return nil, err
 				}
@@ -78,7 +97,7 @@ func decodeFromToken(dec *json.Decoder, tok json.Token) (any, error) {
 		case '[':
 			arr := []any{}
 			for dec.More() {
-				v, err := decodeValue(dec)
+				v, err := st.decodeValue(dec, depth+1)
 				if err != nil {
 					return nil, err
 				}

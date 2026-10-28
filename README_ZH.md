@@ -258,6 +258,20 @@ govulncheck ./...
 
 ```bash
 cd internal/captcha/captcha_node && npm audit --package-lock-only --registry=https://registry.npmjs.org
+### 凭证存储与变更控制
+
+管理口令与网关密钥以 **PBKDF2-SHA256 校验值** 存储（`pbkdf2-sha256$<迭代>$<盐>$<键>`，12 万次迭代），不保存明文 —— 库被读走得到的是校验值而不是口令。旧版的明文记录在启动时自动迁移并清空。修改任一项都必须在 `old_password` 里带上当前口令（防止会话被盗或被 XSS 后静默换锁），旧口令随即失效。
+
+### 请求限制
+
+| 变量 | 默认值 | 含义 |
+|---|---|---|
+| `MAX_BODY_MB` | `8` | 对话请求体上限，超出返回 413 |
+| `MAX_CONCURRENT` | `32` | 同时在途的对话请求数，超出返回 429 + `Retry-After`（`0` = 不限） |
+| `PROXY_PROBE_ALLOW_PRIVATE` | _（关）_ | `/api/proxies/probe` 默认拒绝私网/回环目标（不给内网与云元数据扫描留口子） |
+| `ZCODE_ALLOW_SOLVER_OVERRIDE` | _（关）_ | 必须显式开启，`ZCODE_NODE_SOLVER_CMD` 才会生效（该变量可以执行任意命令） |
+
+JSON 解码器拒绝的请求体（格式错误、嵌套超过 200 层、节点超过 20 万）现在直接返回 400，不再透传给上游；内部错误细节（SQL 文本、路径、上游响应片段）只进日志，客户端只看到通用消息。
 ```
 
 ### 浏览器侧加固

@@ -3,8 +3,10 @@ package gateway
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -17,9 +19,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	raw, err := io.ReadAll(io.LimitReader(r.Body, 50<<20))
+	raw, err := s.readBody(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		if errors.Is(err, errBodyTooLarge) {
+			writeOpenAIError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
+		log.Printf("[error] read body: %v", err)
+		writeOpenAIError(w, http.StatusBadRequest, "could not read request body")
 		return
 	}
 	anth, err := OpenAIToAnthropic(raw)

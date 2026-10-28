@@ -240,6 +240,20 @@ The captcha solver's Node dependencies are pinned to exact versions (`happy-dom 
 
 ```bash
 cd internal/captcha/captcha_node && npm audit --package-lock-only --registry=https://registry.npmjs.org
+### Credential storage and change control
+
+The dashboard password and the gateway key are stored as **PBKDF2-SHA256 verifiers** (`pbkdf2-sha256$<iterations>$<salt>$<key>`, 120k iterations), never as plaintext — a database leak yields a verifier, not a login. Legacy plaintext rows are migrated on boot and the plaintext is blanked. Changing either credential requires the current password in `old_password` (a stolen session or an XSS must not be able to rotate the lock); the old password stops working immediately.
+
+### Request limits
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MAX_BODY_MB` | `8` | largest accepted chat request body; larger → 413 |
+| `MAX_CONCURRENT` | `32` | in-flight chat requests; excess → 429 with `Retry-After` (`0` = unlimited) |
+| `PROXY_PROBE_ALLOW_PRIVATE` | _(off)_ | `/api/proxies/probe` refuses private/loopback targets by default (no LAN scanning, no cloud-metadata probing) |
+| `ZCODE_ALLOW_SOLVER_OVERRIDE` | _(off)_ | required for `ZCODE_NODE_SOLVER_CMD` to be honoured (that variable can run any command) |
+
+Bodies the JSON decoder rejects (malformed, >200 nesting levels, >200k nodes) get a 400 up front instead of being forwarded upstream, and internal error detail (SQL text, paths, upstream bodies) now goes to the log only — clients receive generic messages.
 ```
 
 ### Browser hardening

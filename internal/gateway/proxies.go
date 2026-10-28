@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -213,7 +214,7 @@ func (s *Server) apiProxyProbe(w http.ResponseWriter, r *http.Request) {
 	if target == nil {
 		// "Test current line": probe the direct egress (no proxy line) —
 		// the IP the server actually leaves from today
-		ip, ms, err := probeIP("")
+		ip, ms, err := s.probeIP("")
 		resp := map[string]any{"url": "", "ip": ip, "latency_ms": ms}
 		if err != nil {
 			resp["error"] = err.Error()
@@ -221,7 +222,7 @@ func (s *Server) apiProxyProbe(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, resp)
 		return
 	}
-	ip, ms, err := probeIP(target.URL)
+	ip, ms, err := s.probeIP(target.URL)
 	resp := map[string]any{"url": target.URL, "ip": ip, "latency_ms": ms}
 	if err != nil {
 		resp["error"] = err.Error()
@@ -250,11 +251,14 @@ func (s *Server) apiProxyProbe(w http.ResponseWriter, r *http.Request) {
 
 func proxyFailKey(id int64) string { return fmt.Sprintf("proxy_fail_%d", id) }
 
-func probeIP(proxyURL string) (string, int64, error) {
+func (s *Server) probeIP(proxyURL string) (string, int64, error) {
 	var proxy func(*http.Request) (*url.URL, error)
 	if strings.TrimSpace(proxyURL) != "" {
 		u, err := url.Parse(proxyURL)
 		if err != nil {
+			return "", 0, err
+		}
+		if err := s.checkProbeTarget(u); err != nil {
 			return "", 0, err
 		}
 		proxy = http.ProxyURL(u)
@@ -278,6 +282,38 @@ func probeIP(proxyURL string) (string, int64, error) {
 		lastErr = fmt.Errorf("%s: no ip in response", svc)
 	}
 	return "", 0, lastErr
+}
+
+// checkProbeTarget refuses private/loopback/link-local proxy endpoints.
+//
+// "Probe" means "connect to this URL and tell me what happened" — with no
+// restriction, an authenticated caller could walk the LAN (or the cloud
+// metadata endpoint) and read the answers out of the error strings.
+// PROXY_PROBE_ALLOW_PRIVATE=1 lifts the check for deliberate local testing.
+func (s *Server) checkProbeTarget(u *url.URL) error {
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("proxy URL has no host")
+	}
+	if s.cfg.ProbeAllowPrivate {
+		return nil
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return fmt.Errorf("cannot resolve %s", host)
+	}
+	for _, ip := range ips {
+		if !isPrivateIP(ip) {
+			continue
+		}
+		return fmt.Errorf("refusing to probe %s (%s is a private/loopback address; set PROXY_PROBE_ALLOW_PRIVATE=1 to allow)", host, ip)
+	}
+	return nil
+}
+
+func isPrivateIP(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast()
 }
 
 func extractIP(body string) string {

@@ -31,11 +31,20 @@ type Server struct {
 	loginFlows map[string]*loginFlow
 	warmOnce   sync.Once
 	quotaOnce  sync.Once
-	// noAuth — loopback bind with no AUTH_TOKEN: /api/* and /v1/* are open to
-	// this machine only (cross-site browser access is refused in cors()).
-	noAuth bool
 	// guard — per-IP brute-force brake on the auth endpoints (ratelimit.go)
 	guard *attemptGuard
+	// credentials: env values stay in memory as plaintext (they came from
+	// outside), settings-page values are kept only as PBKDF2 verifiers.
+	// credMu guards the two hash fields — they change at runtime.
+	envToken   string
+	envGateKey string
+	credMu     sync.RWMutex
+	adminHash  string
+	gwKeyHash  string
+	secretOK   *secretCache
+	// request limits
+	bodyLimit int
+	chatSem   chan struct{}
 	// runtime knobs (Settings page): quota monitor interval + captcha pool
 	quotaRefreshMin int
 	poolMin         int
@@ -53,8 +62,18 @@ func NewServer(cfg config.Config) (*Server, error) {
 		store: st,
 		// actual models come from the origin billing (ModelReport/refresh);
 		// only the default model bootstraps the list before the first scan
-		catalog: NewCatalog([]string{config.DefaultModelID}),
-		guard:   newAttemptGuard(cfg.AuthRateLimit, cfg.AuthLockAfter, cfg.AuthLockFor()),
+		catalog:   NewCatalog([]string{config.DefaultModelID}),
+		guard:     newAttemptGuard(cfg.AuthRateLimit, cfg.AuthLockAfter, cfg.AuthLockFor()),
+		envToken:  cfg.AuthToken,
+		envGateKey: cfg.GatewayKey,
+		secretOK:  newSecretCache(),
+		bodyLimit: cfg.MaxBodyMB << 20,
+	}
+	if s.bodyLimit <= 0 {
+		s.bodyLimit = 8 << 20
+	}
+	if cfg.MaxConcurrent > 0 {
+		s.chatSem = make(chan struct{}, cfg.MaxConcurrent)
 	}
 	// THE proxy source: profiles in the store (the dashboard edits them).
 	// PROXY_FILE only seeds them once on a fresh database; chat and billing
@@ -76,25 +95,26 @@ func NewServer(cfg config.Config) (*Server, error) {
 	// (CAPTCHA_MODE=off mutes the background mint entirely)
 	s.captcha = captcha.NewMintPool(node, func() bool { return !cfg.CaptchaOff && s.store.Active() != nil },
 		s.quotaMin(), s.quotaMax(), s.quotaTTL())
-	// keys set from the Settings page are user settings: persisted in the
-	// store, they win over env values after restart
-	if v := s.store.Setting("admin_password", ""); v != "" {
-		s.cfg.AuthToken = v
-	}
-	if v := s.store.Setting("gateway_key", ""); v != "" {
-		s.cfg.GatewayKey = v
-	}
+	// Credentials stored by the Settings page live in the DB as PBKDF2
+	// verifiers. Legacy plaintext rows (admin_password / gateway_key) are
+	// migrated on boot: hash them, write the hash, drop the plaintext.
+	s.loadStoredSecrets()
 	// decide the auth mode only after the stored settings had their say, then
-	// say out loud which mode is in force
-	s.noAuth = s.cfg.AuthMode() == config.AuthModeLocalNoAuth
-	if s.noAuth {
+	// say out loud which mode is in force (the live decision itself is
+	// s.passwordless(), never a cached flag)
+	if s.passwordless() {
 		log.Printf("[auth] NO-PASSWORD MODE: bound to %s, AUTH_TOKEN is empty — the panel and /v1/* are open to this machine only (cross-site browser requests are refused). Set AUTH_TOKEN to require a password.", s.cfg.Host)
-	} else if strings.TrimSpace(s.cfg.GatewayKey) == "" {
-		log.Printf("[auth] password required; GATEWAY_KEY is empty so /v1/* uses the same token as the dashboard — consider setting a separate GATEWAY_KEY")
+	} else if s.envGateKey == "" && s.gwKeyHash == "" {
+		log.Printf("[auth] password required; no GATEWAY_KEY set, so /v1/* uses the same credential as the dashboard — consider setting a separate GATEWAY_KEY")
 	}
 	if s.cfg.AuthRateLimit > 0 || s.cfg.AuthLockAfter > 0 {
 		log.Printf("[auth] brute-force guard: %d failed attempts/min per IP, %d consecutive failures → %s lock (TRUST_PROXY=%v)",
 			s.cfg.AuthRateLimit, s.cfg.AuthLockAfter, s.cfg.AuthLockFor(), s.cfg.TrustProxy)
+	}
+	if s.chatSem != nil {
+		log.Printf("[limits] body ≤ %d MB, %d concurrent chat requests", s.bodyLimit>>20, cap(s.chatSem))
+	} else {
+		log.Printf("[limits] body ≤ %d MB, concurrency unlimited (MAX_CONCURRENT=0)", s.bodyLimit>>20)
 	}
 	// runtime knobs from stored settings (Settings page overrides live)
 	s.quotaRefreshMin = atoiSetting(s.store, "quota_refresh_min", 0)
@@ -308,29 +328,144 @@ func bearerOf(r *http.Request) string {
 	return strings.TrimSpace(got)
 }
 
-// tokenOK is the single authentication decision for both /api/* and /v1/*.
-//
-//   - a configured token must always match (constant-time compare)
-//   - no token at all is accepted ONLY in the loopback no-auth mode; any
-//     other case is deny (fail-closed). main() already refuses to start when
-//     a routable socket has no token, so this is defence in depth.
-func (s *Server) tokenOK(r *http.Request, want string) bool {
-	want = strings.TrimSpace(want)
-	if want == "" {
-		return s.noAuth
+// loadStoredSecrets reads the Settings-page credentials and migrates legacy
+// plaintext rows to PBKDF2 verifiers.
+func (s *Server) loadStoredSecrets() {
+	// admin password
+	if v := s.store.Setting("admin_password", ""); v != "" {
+		if h, err := hashSecret(v); err == nil {
+			s.store.SetSetting(secretKeyAdmin, h)
+			s.store.SetSetting("admin_password", "") // drop the plaintext
+			log.Printf("[auth] migrated stored admin password to a PBKDF2 verifier")
+		} else {
+			log.Printf("[auth] could not hash stored admin password: %v", err)
+		}
 	}
-	return subtle.ConstantTimeCompare([]byte(bearerOf(r)), []byte(want)) == 1
+	if v := s.store.Setting("gateway_key", ""); v != "" {
+		if h, err := hashSecret(v); err == nil {
+			s.store.SetSetting(secretKeyGateway, h)
+			s.store.SetSetting("gateway_key", "")
+			log.Printf("[auth] migrated stored gateway key to a PBKDF2 verifier")
+		} else {
+			log.Printf("[auth] could not hash stored gateway key: %v", err)
+		}
+	}
+	s.adminHash = s.store.Setting(secretKeyAdmin, "")
+	s.gwKeyHash = s.store.Setting(secretKeyGateway, "")
 }
 
-// withGatewayAuth guards /v1/* client endpoints: GATEWAY_KEY when set,
-// otherwise the shared AUTH_TOKEN (gateway-key semantics).
+const (
+	secretKeyAdmin   = "admin_password_pbkdf2"
+	secretKeyGateway = "gateway_key_pbkdf2"
+)
+
+// passwordless reports whether NO credential exists at all. It is computed
+// live (never cached) because the operator can set a password at runtime —
+// caching "there is no password" is exactly how the export gate ended up
+// open after a password was set.
+func (s *Server) passwordless() bool {
+	if s.envToken != "" {
+		return false
+	}
+	s.credMu.RLock()
+	defer s.credMu.RUnlock()
+	return s.adminHash == ""
+}
+
+func (s *Server) adminVerifier() string {
+	s.credMu.RLock()
+	defer s.credMu.RUnlock()
+	return s.adminHash
+}
+
+func (s *Server) gatewayVerifier() string {
+	s.credMu.RLock()
+	defer s.credMu.RUnlock()
+	return s.gwKeyHash
+}
+
+func (s *Server) setAdminVerifier(h string) {
+	s.credMu.Lock()
+	s.adminHash = h
+	s.credMu.Unlock()
+}
+
+func (s *Server) setGatewayVerifier(h string) {
+	s.credMu.Lock()
+	s.gwKeyHash = h
+	s.credMu.Unlock()
+}
+
+// checkAdmin verifies a dashboard credential: env token first (it is the
+// operator's explicit configuration), then the stored verifier, then the
+// loopback no-password mode.
+func (s *Server) checkAdmin(presented string) bool {
+	if s.envToken != "" {
+		return subtle.ConstantTimeCompare([]byte(presented), []byte(s.envToken)) == 1
+	}
+	if v := s.adminVerifier(); v != "" {
+		return s.checkSecret(v, presented)
+	}
+	return s.passwordless()
+}
+
+// checkGateway verifies a /v1/* credential: GATEWAY_KEY / stored gateway
+// verifier when configured, otherwise the admin credential.
+func (s *Server) checkGateway(presented string) bool {
+	if s.envGateKey != "" {
+		return subtle.ConstantTimeCompare([]byte(presented), []byte(s.envGateKey)) == 1
+	}
+	if v := s.gatewayVerifier(); v != "" {
+		return s.checkSecret(v, presented)
+	}
+	return s.checkAdmin(presented)
+}
+
+// setAdminPassword stores a new admin verifier (empty clears it, loopback only).
+func (s *Server) setAdminPassword(pw string) error {
+	if pw == "" {
+		s.store.SetSetting(secretKeyAdmin, "")
+		s.setAdminVerifier("")
+		s.secretOK.reset()
+		return nil
+	}
+	h, err := hashSecret(pw)
+	if err != nil {
+		return err
+	}
+	s.store.SetSetting(secretKeyAdmin, h)
+	s.setAdminVerifier(h)
+	s.secretOK.reset()
+	return nil
+}
+
+// setGatewayKey stores a new gateway verifier.
+func (s *Server) setGatewayKey(key string) error {
+	if key == "" {
+		s.store.SetSetting(secretKeyGateway, "")
+		s.setGatewayVerifier("")
+		s.secretOK.reset()
+		return nil
+	}
+	h, err := hashSecret(key)
+	if err != nil {
+		return err
+	}
+	s.store.SetSetting(secretKeyGateway, h)
+	s.setGatewayVerifier(h)
+	s.secretOK.reset()
+	return nil
+}
+
+// hasPassword reports whether any credential is required at all.
+func (s *Server) hasPassword() bool {
+	return !s.passwordless()
+}
+
+// withGatewayAuth guards /v1/* client endpoints.
 func (s *Server) withGatewayAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		key := s.cfg.GatewayKey
-		if key == "" {
-			key = s.cfg.AuthToken
-		}
-		if !s.enforceAuth(w, r, key, "gateway key") {
+		if !s.enforceAuth(w, r, s.checkGateway, "gateway key") {
 			return
 		}
 		next(w, r)
@@ -339,7 +474,7 @@ func (s *Server) withGatewayAuth(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.enforceAuth(w, r, s.cfg.AuthToken, "auth token") {
+		if !s.enforceAuth(w, r, s.checkAdmin, "auth token") {
 			return
 		}
 		next(w, r)

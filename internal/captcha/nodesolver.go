@@ -97,7 +97,10 @@ func childEnv() []string {
 		"REQUESTS_CA_BUNDLE": true, "CURL_CA_BUNDLE": true,
 		"NODE_EXTRA_CA_CERTS": true, "NODE_TLS_REJECT_UNAUTHORIZED": true,
 	}
-	env := os.Environ()[:0]
+	// build into a fresh slice: reusing os.Environ()'s backing array (the old
+	// [:0] trick) worked only because Environ() hands back a new slice each
+	// call — one refactor away from silently corrupting the environment
+	env := make([]string, 0, 64)
 	for _, kv := range os.Environ() {
 		if i := strings.IndexByte(kv, '='); i > 0 && !drop[kv[:i]] {
 			env = append(env, kv)
@@ -109,7 +112,12 @@ func childEnv() []string {
 func (n *NodeSolver) solveOnce(ctx context.Context, cc captchaCfg) (string, error) {
 	var args []string
 	dir := ""
+	// The spawn override can run ANY command, so it needs an explicit opt-in:
+	// an env var alone must not be enough to turn this service into a shell.
 	if override := strings.TrimSpace(os.Getenv("ZCODE_NODE_SOLVER_CMD")); override != "" {
+		if !n.cfg.AllowSolverOverride {
+			return "", fmt.Errorf("ZCODE_NODE_SOLVER_CMD is set but ignored (start with ZCODE_ALLOW_SOLVER_OVERRIDE=1 to allow it)")
+		}
 		// test hook: full spawn override; the cwd stays the caller's
 		args = strings.Fields(override)
 	} else {

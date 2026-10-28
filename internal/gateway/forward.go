@@ -21,15 +21,32 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 50<<20))
+	body, err := s.readBody(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		if errors.Is(err, errBodyTooLarge) {
+			writeAnthropicError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "request body too large")
+			return
+		}
+		log.Printf("[error] read body: %v", err)
+		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", "could not read request body")
 		return
 	}
 	s.routeAnthropic(w, r, body, false)
 }
 
 func (s *Server) routeAnthropic(w http.ResponseWriter, r *http.Request, body []byte, openai bool) {
+	// Reject bodies the ordered decoder refuses (malformed JSON, absurd
+	// nesting, >200k nodes) up front: previously such a body was passed
+	// through untouched and only failed somewhere upstream.
+	if _, err := parseOrdered(body); err != nil {
+		log.Printf("[request] rejected body from %s: %v", s.clientIP(r), err)
+		if openai {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid JSON request body")
+		} else {
+			writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON request body")
+		}
+		return
+	}
 	body = s.injectDefaults(body)
 	model := upstream.ParseModel(body)
 	if model == "" {
