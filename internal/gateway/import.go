@@ -29,13 +29,63 @@ func sqliteRO(path string) string {
 	return "file:" + filepath.ToSlash(abs) + "?mode=ro"
 }
 
+// maxImportBytes caps a manager-database upload (and the server-side file it
+// points at). A manager DB is a few MB at most.
+const maxImportBytes = 64 << 20
+
+// importDir is the only directory a server-side import path may live in.
+func importDir() (string, error) {
+	dir, err := filepath.Abs(filepath.Join("data", "import"))
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create import dir: %w", err)
+	}
+	return dir, nil
+}
+
+// withinDir reports whether target is strictly inside dir (after resolving
+// symlinks on both), i.e. no "..", no absolute-elsewhere, no symlink escape.
+func withinDir(dir, target string) (string, bool) {
+	dirReal, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", false
+	}
+	abs, err := filepath.Abs(target)
+	if err != nil {
+		return "", false
+	}
+	// resolve the file too; a symlink inside the dir must not point outside it
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", false // missing file (or broken link) is not acceptable
+	}
+	rel, err := filepath.Rel(dirReal, real)
+	if err != nil || rel == "." || rel == ".." ||
+		strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		return "", false
+	}
+	return real, true
+}
+
+// importFile resolves the manager database to read.
+//
+// Two forms are accepted, and nothing else:
+//
+//   - multipart upload (the normal path): streamed to a 0600 temp file
+//   - {"path": "..."} where the path resolves inside data/import/
+//
+// The old behaviour — open any path the caller named, `os.Stat` it and let the
+// SQLite error text leak back — turned this endpoint into a file-existence
+// oracle over the whole machine (and a way to slurp any SQLite database on it).
 func importFile(r *http.Request) (path, cleanup string, err error) {
 	ct := r.Header.Get("Content-Type")
 	if strings.HasPrefix(ct, "multipart/") {
-		if err := r.ParseMultipartForm(64 << 20); err != nil {
+		if err := r.ParseMultipartForm(maxImportBytes); err != nil {
 			return "", "", fmt.Errorf("upload: %w", err)
 		}
-		f, hdr, err := r.FormFile("file")
+		f, _, err := r.FormFile("file")
 		if err != nil {
 			return "", "", fmt.Errorf("pick a .db file")
 		}
@@ -44,26 +94,46 @@ func importFile(r *http.Request) (path, cleanup string, err error) {
 		if err != nil {
 			return "", "", err
 		}
-		if _, err := io.Copy(tmp, f); err != nil {
-			tmp.Close()
+		n, err := io.Copy(tmp, io.LimitReader(f, maxImportBytes+1))
+		if err == nil && n > maxImportBytes {
+			err = fmt.Errorf("file larger than %d bytes", maxImportBytes)
+		}
+		tmp.Close()
+		if err != nil {
 			os.Remove(tmp.Name())
 			return "", "", err
 		}
-		tmp.Close()
-		name := tmp.Name()
-		if hdr != nil && hdr.Filename != "" {
-			_ = hdr.Filename
-		}
-		return name, name, nil
+		return tmp.Name(), tmp.Name(), nil
 	}
+
 	var body struct {
 		Path string `json:"path"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	if strings.TrimSpace(body.Path) == "" {
-		return "", "", fmt.Errorf("no file")
+	_ = json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body)
+	want := strings.TrimSpace(body.Path)
+	if want == "" {
+		return "", "", fmt.Errorf("upload a .db file, or pass a path inside data/import/")
 	}
-	return body.Path, "", nil
+	dir, err := importDir()
+	if err != nil {
+		return "", "", err
+	}
+	// a bare filename is taken relative to data/import/
+	if filepath.Base(want) == want {
+		want = filepath.Join(dir, want)
+	}
+	real, ok := withinDir(dir, want)
+	if !ok {
+		return "", "", fmt.Errorf("path must be a regular file inside data/import/")
+	}
+	fi, err := os.Stat(real)
+	if err != nil || !fi.Mode().IsRegular() {
+		return "", "", fmt.Errorf("path must be a regular file inside data/import/")
+	}
+	if fi.Size() > maxImportBytes {
+		return "", "", fmt.Errorf("file larger than %d bytes", maxImportBytes)
+	}
+	return real, "", nil
 }
 
 func (s *Server) ImportManagerDB(path string) (ImportResult, error) {

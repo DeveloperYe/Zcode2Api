@@ -239,6 +239,7 @@ Model: GLM-5.3
 `data/` 目录按 `0700` 创建，SQLite 文件 `0600`（Windows 上通过 `icacls` 去掉继承 ACL，只留当前用户）。库里有整池 JWT 与 `api.z.ai` 密钥的明文，不能让其它账户读到。
 
 导出只在两道门都过才给：`GET /api/accounts/export?confirm=1` **并且**在 `X-Reauth` 头里重新输入管理口令（本机免密模式没有口令可输，confirm 即为全部条件）。被拒绝与成功的导出都会记日志：`[export] …`。
+**manager 库导入**（`POST /api/accounts/import`）只接受 multipart 上传，或落在 `data/import/` 内的路径（裸文件名或绝对路径）。原来它接受机器上任意路径、`os.Stat` 之后把 SQLite 报错原样回显 —— 既是文件存在性探针，也能把指向的任何 SQLite 库读走。现在所有非法形式返回同一条消息，连"文件在不在"都问不出来。
 
 ### 浏览器侧加固
 

@@ -221,6 +221,7 @@ Every authentication endpoint is rate limited per client IP: rejected credential
 `data/` is created `0700` and the SQLite file is `0600` (on Windows the inherited ACL is stripped with `icacls`, leaving only the current user). The database holds every JWT and `api.z.ai` key in cleartext, so it must not be world-readable.
 
 Exporting the pool is a two-step gate: `GET /api/accounts/export?confirm=1` **plus** the admin password re-entered in the `X-Reauth` header (in loopback no-password mode the confirm flag is the whole gate). Refused and successful exports are logged as `[export] …`.
+**Manager-database import** (`POST /api/accounts/import`) accepts a multipart upload, or a path (bare filename or absolute) that resolves inside `data/import/` — nothing else. It used to take any path on the machine, `os.Stat` it and echo back the SQLite error, which made the endpoint a file-existence oracle and let it slurp any SQLite database. Every rejected form now returns the same message, so it cannot even tell you whether a path exists.
 
 ### Browser hardening
 
