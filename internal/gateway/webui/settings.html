@@ -75,6 +75,7 @@
 </div>
 <div class="toast-container" id="toasts"></div>
 <script src="/app.js?v=1.0.6"></script>
+<script src="/i18n-zh.js?v=1"></script>
 <script>
 const PAGE = 'settings';
 function boot() {
@@ -84,7 +85,9 @@ function boot() {
     document.getElementById('set-pmax').value = d.captcha_pool_max || 10;
     document.getElementById('set-pttl').value = d.captcha_pool_ttl || '95s';
     j('/api/status').then(s => {
-      const sel =       sel.innerHTML = (s.models || [{ id: d.default_model || 'GLM-5.3' }]).map(m => `<option ${m.id === d.default_model ? 'selected' : ''}>${m.id}</option>`).join('');
+      // 上游此处为 `const sel = sel.innerHTML = …`：自引用触发 TDZ ReferenceError，
+      // 且页面里并没有这个 select 元素 —— 结果是版本号/模型列表永远渲染不出来。
+      // 中文分支直接移除这行死代码，保留版本号刷新。
       const v = document.getElementById('hdr-version'); if (v) v.textContent = 'v' + (s.version || '1.0.0');
     });
   });
