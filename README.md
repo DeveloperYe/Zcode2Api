@@ -222,6 +222,11 @@ Every authentication endpoint is rate limited per client IP: rejected credential
 
 Exporting the pool is a two-step gate: `GET /api/accounts/export?confirm=1` **plus** the admin password re-entered in the `X-Reauth` header (in loopback no-password mode the confirm flag is the whole gate). Refused and successful exports are logged as `[export] …`.
 **Manager-database import** (`POST /api/accounts/import`) accepts a multipart upload, or a path (bare filename or absolute) that resolves inside `data/import/` — nothing else. It used to take any path on the machine, `os.Stat` it and echo back the SQLite error, which made the endpoint a file-existence oracle and let it slurp any SQLite database. Every rejected form now returns the same message, so it cannot even tell you whether a path exists.
+### Captcha solver: TLS and cache integrity
+
+The solver runs as a Node subprocess, downloads JavaScript from the Aliyun CDN and executes it in a happy-dom VM — and that process has `fs` and `child_process`. TLS verification is therefore **strict by default**: `ZCODE_TLS_VERIFY=0` is the only way to disable it, and it prints a loud warning to stderr. (Upstream hard-coded `rejectUnauthorized: false` in the synchronous CDN fetch, which made every mint MITM-able: a hostile Wi-Fi, a tampered DNS answer or a compromised CDN could have run arbitrary code on the host.)
+
+Cache entries in `~/.zcode-captcha-cdn-cache` are keyed by `sha1(URL)` and stored next to a `.sha256` sidecar of their content. A cache read only counts as a hit when the hash matches; a mismatch is logged as `[cache-CORRUPT]`, deleted and re-fetched, and legacy entries without a sidecar are re-fetched once (`[cache-untagged]`).
 
 ### Browser hardening
 

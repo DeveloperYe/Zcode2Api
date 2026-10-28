@@ -32,13 +32,25 @@ const dbg = (msg) => {
   if (DEBUG) process.stderr.write(`[solver] ${msg}\n`);
 };
 
-// TLS verification toggle: the same ZCODE_TLS_VERIFY variable the Python side uses.
-// Disable only when debugging through a MITM proxy (Charles/Fiddler/mitmproxy) that
-// re-signs TLS with its own CA — otherwise every upstream handshake fails with
-// CERTIFICATE_VERIFY_FAILED.
+// TLS verification: STRICT by default.
+//
+// This process downloads JavaScript from the CDN and executes it in the
+// happy-dom VM, and it has fs + child_process access. Skipping certificate
+// verification therefore means "anyone who can MITM this host — hostile
+// Wi-Fi, a compromised router, a tampered DNS answer, a malicious corporate
+// gateway — can run arbitrary code on this machine". The upstream code had
+// rejectUnauthorized:false hard-coded in the sync fetch for convenience while
+// debugging through mitmproxy; that hole is closed.
+//
+// ZCODE_TLS_VERIFY=0 is the explicit, noisy, debugging-only escape hatch
+// (needed when you really do route this through Charles/Fiddler/mitmproxy).
 const tlsInsecure = /^(0|false|no|off)$/i.test(process.env.ZCODE_TLS_VERIFY || "");
 if (tlsInsecure) {
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+  process.stderr.write(
+    "[solver] WARNING: TLS certificate verification DISABLED (ZCODE_TLS_VERIFY=0). " +
+      "Any middlebox can now run code on this host. Do not use in production.\n",
+  );
 }
 
 const proxyUrl = process.env.HTTP_PROXY || process.env.HTTPS_PROXY;
@@ -106,6 +118,37 @@ function sniffMime(url) {
   return "application/octet-stream";
 }
 
+// sha256 of a buffer, hex — the CDN cache integrity tag
+function sha256Hex(buf) {
+  return crypto.createHash("sha256").update(buf).digest("hex");
+}
+
+// writeCache stores the body plus its .sha256 sidecar (content integrity)
+function writeCache(p, buf) {
+  fs.mkdirSync(CDN_CACHE_DIR, { recursive: true });
+  fs.writeFileSync(p, buf);
+  try {
+    fs.writeFileSync(p + ".sha256", sha256Hex(buf));
+  } catch (err) {
+    dbg(`cache-meta-write-err ${p}: ${err.message}`);
+  }
+}
+
+// dropCache removes a cache entry: memory copy, body and integrity sidecar
+function dropCache(url) {
+  _memCdnCache.delete(url);
+  const p = diskPathFor(url);
+  try {
+    fs.unlinkSync(p);
+  } catch (_) {}
+  try {
+    fs.unlinkSync(p + ".sha256");
+  } catch (_) {}
+}
+
+// getCachedBody: a cache hit is only a hit when the sidecar hash matches.
+// The filename is sha1(URL), i.e. it says nothing about the CONTENT — without
+// this check a local file swap (or a half-written entry) would be executed.
 function getCachedBody(url) {
   const mem = _memCdnCache.get(url);
   if (mem) return mem;
@@ -113,6 +156,23 @@ function getCachedBody(url) {
     const p = diskPathFor(url);
     if (fs.existsSync(p)) {
       const body = fs.readFileSync(p);
+      let want = "";
+      try {
+        want = fs.readFileSync(p + ".sha256", "utf8").trim();
+      } catch (_) {}
+      if (!want) {
+        // legacy entry (written before integrity tags existed) — refetch once
+        process.stderr.write(`[cache-untagged] ${url.split("/").pop()} (refetch)\n`);
+        return null;
+      }
+      if (want !== sha256Hex(body)) {
+        process.stderr.write(`[cache-CORRUPT] ${url.split("/").pop()} hash mismatch — discarding and refetching\n`);
+        try {
+          fs.unlinkSync(p);
+          fs.unlinkSync(p + ".sha256");
+        } catch (_) {}
+        return null;
+      }
       _memCdnCache.set(url, body);
       return body;
     }
@@ -127,13 +187,8 @@ async function fetchAndStore(url) {
     if (buf.length > 0) {
       _memCdnCache.set(url, buf);
       try {
-        const p = diskPathFor(url);
-        fs.mkdirSync(CDN_CACHE_DIR, { recursive: true });
-        fs.writeFileSync(p, buf);
-        const stat = fs.statSync(p);
-        if (stat.size !== buf.length) {
-          fs.writeFileSync(p, buf);
-        }
+        writeCache(diskPathFor(url), buf);
+        dbg(`cache-write ${url.split("/").pop()} sha256=${sha256Hex(buf).slice(0, 12)}…`);
       } catch (err) {
         dbg(`cache-write-err ${url}: ${err.message}`);
       }
@@ -153,17 +208,11 @@ function noteStallAndMaybeEvict(peUrl) {  try {
     _stallCounts.set(peUrl, n);
     process.stderr.write(`[pe-stall] ${peUrl.split("/").pop()} x${n}\n`);
     if (n >= 2) {
-      _memCdnCache.delete(peUrl);
-      try {
-        fs.unlinkSync(diskPathFor(peUrl));
-      } catch (_) {}
+      dropCache(peUrl);
       _stallCounts.delete(peUrl);
     } else if (fs.existsSync(diskPathFor(peUrl))) {
       // There is no "next time" inside a subprocess; invalidate immediately: delete the cache so the next process re-fetches
-      _memCdnCache.delete(peUrl);
-      try {
-        fs.unlinkSync(diskPathFor(peUrl));
-      } catch (_) {}
+      dropCache(peUrl);
     }
   } catch (_) {}
 }
@@ -257,11 +306,14 @@ function cookiesFromSetCookie(list, url) {
 // cb)`, which under Node 26 is a straight TypeError (when the URL is undefined, opts is treated as the listener).
 // The interceptor never returns null for sync requests: on cache miss it uses the correct subprocess fetch below.
 function syncFetchBody(url, headers) {
+  // rejectUnauthorized follows the explicit debug switch only — it used to be
+  // hard-coded false here, which quietly made every CDN download MITM-able
+  const rejectUnauthorized = !tlsInsecure;
   const script = `
 const http = require("http"), https = require("https");
 const u = new URL(${JSON.stringify(url)});
 const mod = u.protocol === "https:" ? https : http;
-const req = mod.request(u, { method: "GET", headers: ${JSON.stringify(headers || {})}, rejectUnauthorized: false }, (res) => {
+const req = mod.request(u, { method: "GET", headers: ${JSON.stringify(headers || {})}, rejectUnauthorized: ${rejectUnauthorized} }, (res) => {
   const chunks = [];
   res.on("data", (c) => chunks.push(c));
   res.on("end", () => console.log(JSON.stringify({ error: null, status: res.statusCode, b64: Buffer.concat(chunks).toString("base64") })));
@@ -296,10 +348,7 @@ function makeInterceptor() {
         new Function(body.toString("utf8"));
       } catch (parseErr) {
         process.stderr.write(`[cache-bad-js] ${url} len=${body.length} ${parseErr.message} — refetch\n`);
-        _memCdnCache.delete(url);
-        try {
-          fs.unlinkSync(diskPathFor(url));
-        } catch (_) {}
+        dropCache(url);
         body = null;
       }
     }
@@ -401,8 +450,7 @@ function makeInterceptor() {
         if (fresh && fresh.length > 0) {
           _memCdnCache.set(url, fresh);
           try {
-            fs.mkdirSync(CDN_CACHE_DIR, { recursive: true });
-            fs.writeFileSync(diskPathFor(url), fresh);
+            writeCache(diskPathFor(url), fresh);
           } catch (_) {}
           return {
             status: 200,
@@ -467,10 +515,7 @@ function installEvalInstrumentation(w) {
               const fresh = await fetchAndStore(filename);
               if (fresh && fresh.length !== src.length) {
                 dbg(`EVAL-CACHE-MISMATCH deleting ${diskPathFor(filename)}`);
-                try {
-                  fs.unlinkSync(diskPathFor(filename));
-                } catch (_) {}
-                _memCdnCache.delete(filename);
+                dropCache(filename);
               }
             } catch (_) {}
           })();

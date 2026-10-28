@@ -240,6 +240,11 @@ Model: GLM-5.3
 
 导出只在两道门都过才给：`GET /api/accounts/export?confirm=1` **并且**在 `X-Reauth` 头里重新输入管理口令（本机免密模式没有口令可输，confirm 即为全部条件）。被拒绝与成功的导出都会记日志：`[export] …`。
 **manager 库导入**（`POST /api/accounts/import`）只接受 multipart 上传，或落在 `data/import/` 内的路径（裸文件名或绝对路径）。原来它接受机器上任意路径、`os.Stat` 之后把 SQLite 报错原样回显 —— 既是文件存在性探针，也能把指向的任何 SQLite 库读走。现在所有非法形式返回同一条消息，连"文件在不在"都问不出来。
+### 打码器的 TLS 与缓存完整性
+
+打码器是 Node 子进程：从阿里云 CDN 下载 JS 并在 happy-dom 里执行，而这个进程有 `fs` 与 `child_process`。所以 TLS 校验**默认严格**：只有显式 `ZCODE_TLS_VERIFY=0` 才能关掉，且会在 stderr 打一条醒目警告。（上游在同步抓取里硬编码了 `rejectUnauthorized: false`，等于让每一次打码都可被中间人利用：恶意 Wi-Fi、被投毒的 DNS、被攻陷的 CDN 都能在本机执行任意代码。）
+
+`~/.zcode-captcha-cdn-cache` 下的缓存条目以 `sha1(URL)` 命名，旁边有一个 `.sha256` 内容指纹。只有指纹匹配才算命中；不匹配会打 `[cache-CORRUPT]`、删除并重新抓取；没有指纹的旧条目只重抓一次（`[cache-untagged]`）。
 
 ### 浏览器侧加固
 
